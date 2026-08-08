@@ -95,10 +95,14 @@ export const W1Command = cmd<{}, Args>({
       directory,
       threadID: args.session?.trim() || `cli-${randomUUID()}`,
       first: !args.session,
+      closing: false,
       turn: undefined as TurnState | undefined,
       client: undefined as RuntimeClient | undefined,
       pendingImages: await Promise.all((args.image ?? []).map(imageDataUrl)),
     }
+    let stopPromise: Promise<void> | undefined
+    let lastInterrupt = 0
+    const stopRuntime = () => (stopPromise ??= state.client?.stop() ?? Promise.resolve())
 
     const onFrame = async (frame: ProtocolFrame) => {
       if (frame.tag === "EVT") renderEvent(frame.payload, state.turn, Boolean(args.verbose))
@@ -137,18 +141,29 @@ export const W1Command = cmd<{}, Args>({
       })
       state.client.exited.then((code) => {
         state.turn?.activity.clear()
-        state.turn?.done.reject(new Error(`W1 runtime exited unexpectedly (exit ${code}).`))
+        if (state.closing) state.turn?.done.reject(new Error("W1 session closed."))
+        else state.turn?.done.reject(new Error(`W1 runtime exited unexpectedly (exit ${code}).`))
       })
       const interrupt = () => {
+        if (state.closing) {
+          if (Date.now() - lastInterrupt < 250) return
+          restoreTerminal()
+          process.exit(130)
+        }
+        lastInterrupt = Date.now()
+        state.closing = true
+        process.exitCode = 130
+        state.turn?.activity.clear()
+        write(`\n${color.dim}closing W1…${color.reset}\n`)
+        readline.close()
+        void stopRuntime()
         if (state.turn) {
-          state.turn.activity.clear()
-          state.client?.interrupt()
-          write(`\n${color.dim}stopping W1…${color.reset}\n`)
+          state.turn.done.reject(new Error("W1 session closed."))
           return
         }
-        readline.close()
       }
       process.on("SIGINT", interrupt)
+      readline.on("SIGINT", interrupt)
       header(directory, state.client.location.source, state.threadID, fullAccess)
 
       try {
@@ -166,7 +181,7 @@ export const W1Command = cmd<{}, Args>({
             break
           }
           if (!request) continue
-          if (request === "/exit" || request === "/quit") break
+          if (["exit", "quit", "/exit", "/quit"].includes(request.toLowerCase())) break
           if (request === "/help") {
             help()
             continue
@@ -187,14 +202,19 @@ export const W1Command = cmd<{}, Args>({
             continue
           }
           const result = await runTurn(state, request, args)
+          if (state.closing) break
           setExitCode(result)
         }
+      } catch (error) {
+        if (!state.closing) throw error
       } finally {
         process.off("SIGINT", interrupt)
+        readline.off("SIGINT", interrupt)
       }
     } finally {
       readline.close()
-      await state.client?.stop()
+      await stopRuntime()
+      restoreTerminal()
     }
   },
 })
@@ -417,7 +437,7 @@ function help() {
       `${color.bold}/image PATH${color.reset} attach an image to the next turn`,
       `${color.bold}/clear${color.reset}      start a new W1 thread`,
       `${color.bold}/doctor${color.reset}     show the diagnostic command`,
-      `${color.bold}/exit${color.reset}       quit`,
+      `${color.bold}exit | /exit${color.reset} quit (Ctrl+C and Ctrl+D also work)`,
       "",
     ].join("\n"),
   )
@@ -429,4 +449,9 @@ function setExitCode(result: Record<string, unknown>) {
 
 function write(text: string) {
   process.stdout.write(text)
+}
+
+function restoreTerminal() {
+  if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") process.stdin.setRawMode(false)
+  process.stdin.pause()
 }

@@ -78,7 +78,7 @@ Build one native artifact:
 
 ```bash
 cd packages/opencode
-W1_CLI_VERSION=0.1.2 bun run build --single --skip-install --skip-embed-web-ui
+W1_CLI_VERSION=0.1.3 bun run build --single --skip-install --skip-embed-web-ui
 ```
 
 Set `W1_RUNTIME_BUNDLE_DIR` when the harness bundle is not in the default sibling location.

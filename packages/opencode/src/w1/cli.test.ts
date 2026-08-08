@@ -2,6 +2,7 @@ import { expect, test } from "bun:test"
 import { mkdir } from "fs/promises"
 import path from "path"
 import os from "os"
+import * as Pty from "@opencode-ai/core/pty/pty.bun"
 
 test("the W1 command completes a streamed turn through the real stdio adapter", async () => {
   const root = (await Bun.$`mktemp -d ${path.join(os.tmpdir(), "w1-cli-command.XXXXXX")}`.text()).trim()
@@ -99,6 +100,112 @@ test("--yolo enables full access and shows activity without exposing reasoning",
     expect(stdout).toContain("mode:full-access:accept")
     expect(stdout).not.toContain("Allow?")
     expect(stdout).not.toContain("private reasoning")
+  } finally {
+    await Bun.$`rm -rf ${root}`
+  }
+})
+
+test.skipIf(process.platform === "win32")(
+  "interactive exit closes immediately without sending a model turn",
+  async () => {
+    const root = (await Bun.$`mktemp -d ${path.join(os.tmpdir(), "w1-cli-exit.XXXXXX")}`.text()).trim()
+    const runtime = path.join(root, "mock-runtime.mjs")
+    const received = path.join(root, "received-turn.json")
+    await mkdir(path.join(root, ".w1"), { recursive: true })
+    await Bun.write(path.join(root, ".w1", "auth.json"), JSON.stringify({ token: "w1s_fixture" }))
+    await Bun.write(
+      runtime,
+      [
+        'import { appendFileSync } from "node:fs"',
+        'import { createInterface } from "node:readline"',
+        'process.stdout.write("@@READY@@{\\"pid\\":1}\\n")',
+        "const lines = createInterface({ input: process.stdin })",
+        'lines.on("line", (line) => {',
+        `  appendFileSync(${JSON.stringify(received)}, line + "\\n")`,
+        '  process.stdout.write("@@RESULT@@{\\"status\\":\\"model_finished\\",\\"steps\\":0}\\n")',
+        '  process.stdout.write("@@IDLE@@{}\\n")',
+        "})",
+        "export async function serve() {}",
+        "",
+      ].join("\n"),
+    )
+
+    try {
+      const child = Pty.spawn(process.execPath, [path.resolve(import.meta.dir, "../index.ts"), root], {
+        name: "xterm-256color",
+        cols: 100,
+        rows: 30,
+        cwd: root,
+        env: Object.fromEntries(
+          Object.entries({ ...process.env, HOME: root, USERPROFILE: root, W1_RUNTIME_PATH: runtime }).filter(
+            (entry): entry is [string, string] => entry[1] !== undefined,
+          ),
+        ),
+      })
+      let output = ""
+      child.onData((data) => (output += data))
+      const exited = Promise.withResolvers<number>()
+      child.onExit((event) => exited.resolve(event.exitCode))
+      for (let attempt = 0; attempt < 100 && !output.includes("›"); attempt++) await Bun.sleep(20)
+      expect(output).toContain("›")
+      child.write("exit\r")
+      const exitCode = await Promise.race([exited.promise, Bun.sleep(3_000).then(() => -1)])
+      if (exitCode === -1) child.kill("SIGKILL")
+      expect(exitCode, output).toBe(0)
+      expect(await Bun.file(received).exists()).toBe(false)
+    } finally {
+      await Bun.$`rm -rf ${root}`
+    }
+  },
+)
+
+test.skipIf(process.platform === "win32")("Ctrl+C closes W1 and its runtime during an active turn", async () => {
+  const root = (await Bun.$`mktemp -d ${path.join(os.tmpdir(), "w1-cli-interrupt.XXXXXX")}`.text()).trim()
+  const runtime = path.join(root, "mock-runtime.mjs")
+  const runtimePid = path.join(root, "runtime.pid")
+  await mkdir(path.join(root, ".w1"), { recursive: true })
+  await Bun.write(path.join(root, ".w1", "auth.json"), JSON.stringify({ token: "w1s_fixture" }))
+  await Bun.write(
+    runtime,
+    [
+      'import { writeFileSync } from "node:fs"',
+      'import { createInterface } from "node:readline"',
+      `writeFileSync(${JSON.stringify(runtimePid)}, String(process.pid))`,
+      'process.stdout.write("@@READY@@{\\"pid\\":1}\\n")',
+      "const lines = createInterface({ input: process.stdin })",
+      'lines.on("line", () => process.stdout.write("@@EVT@@{\\"t\\":\\"think_delta\\",\\"text\\":\\"private\\"}\\n"))',
+      "export async function serve() {}",
+      "",
+    ].join("\n"),
+  )
+
+  try {
+    const child = Pty.spawn(process.execPath, [path.resolve(import.meta.dir, "../index.ts"), root], {
+      name: "xterm-256color",
+      cols: 100,
+      rows: 30,
+      cwd: root,
+      env: Object.fromEntries(
+        Object.entries({ ...process.env, HOME: root, USERPROFILE: root, W1_RUNTIME_PATH: runtime }).filter(
+          (entry): entry is [string, string] => entry[1] !== undefined,
+        ),
+      ),
+    })
+    let output = ""
+    child.onData((data) => (output += data))
+    const exited = Promise.withResolvers<number>()
+    child.onExit((event) => exited.resolve(event.exitCode))
+    for (let attempt = 0; attempt < 100 && !output.includes("›"); attempt++) await Bun.sleep(20)
+    child.write("keep working\r")
+    for (let attempt = 0; attempt < 100 && !output.includes("Thinking"); attempt++) await Bun.sleep(20)
+    expect(output).toContain("Thinking")
+    child.write("\x03")
+    const exitCode = await Promise.race([exited.promise, Bun.sleep(3_000).then(() => -1)])
+    if (exitCode === -1) child.kill("SIGKILL")
+    expect(exitCode, output).toBe(130)
+    const pid = Number(await Bun.file(runtimePid).text())
+    await Bun.sleep(50)
+    expect(() => process.kill(pid, 0)).toThrow()
   } finally {
     await Bun.$`rm -rf ${root}`
   }
