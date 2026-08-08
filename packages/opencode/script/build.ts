@@ -16,6 +16,7 @@ import { Script } from "@opencode-ai/script"
 import pkg from "../package.json"
 
 const productName = "w1-cli"
+const productVersion = process.env.W1_CLI_VERSION?.trim() || pkg.version
 
 const singleFlag = process.argv.includes("--single")
 const baselineFlag = process.argv.includes("--baseline")
@@ -193,14 +194,14 @@ for (const item of targets) {
       autoloadPackageJson: true,
       target: name.replace(productName, "bun") as any,
       outfile: `dist/${name}/bin/w1`,
-      execArgv: [`--user-agent=w1/${Script.version}`, "--use-system-ca", "--"],
+      execArgv: [`--user-agent=w1/${productVersion}`, "--use-system-ca", "--"],
       windows: {},
     },
     files: embeddedFileMap ? { "opencode-web-ui.gen.ts": embeddedFileMap } : {},
     entrypoints: ["./src/index.ts", ...(embeddedFileMap ? ["opencode-web-ui.gen.ts"] : [])],
     define: {
       FFF_LIBC: JSON.stringify(item.abi === "musl" ? "musl" : "gnu"),
-      OPENCODE_VERSION: `'${Script.version}'`,
+      OPENCODE_VERSION: `'${productVersion}'`,
       OPENCODE_MODELS_DEV: generated.modelsData,
       OTUI_TREE_SITTER_WORKER_PATH: bunfsRoot + "opentui-tree-sitter-worker.js",
       OPENCODE_WORKER_PATH: workerPath,
@@ -239,7 +240,7 @@ for (const item of targets) {
     JSON.stringify(
       {
         name,
-        version: Script.version,
+        version: productVersion,
         preferUnplugged: true,
         os: [item.os],
         cpu: [item.arch],
@@ -249,7 +250,7 @@ for (const item of targets) {
       2,
     ),
   )
-  binaries[name] = Script.version
+  binaries[name] = productVersion
 }
 
 if (Script.release) {
