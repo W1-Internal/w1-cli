@@ -256,6 +256,8 @@ export const DESKTOP_NATIVE_ENGLISH = {
   "desktop.menu.toggleFullScreen": "Toggle Full Screen",
   "desktop.menu.back": "Back",
   "desktop.menu.forward": "Forward",
+  "desktop.menu.previousTab": "Previous Tab",
+  "desktop.menu.nextTab": "Next Tab",
   "desktop.menu.previousSession": "Previous Session",
   "desktop.menu.nextSession": "Next Session",
   "desktop.menu.previousProject": "Previous Project",
