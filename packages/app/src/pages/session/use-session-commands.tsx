@@ -20,6 +20,7 @@ import { Message, Part, UserMessage } from "@opencode-ai/sdk/v2"
 import { useSessionLayout } from "@/pages/session/session-layout"
 import { createSessionOwnership } from "./session-ownership"
 import { useLocal } from "@/context/local"
+import { WorkspaceOperation } from "@/utils/workspace-operation"
 
 export type SessionCommandContext = {
   navigateMessageByOffset: (offset: number) => void
@@ -74,6 +75,8 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
     if (!id) return
     return sync().session.get(id)
   }
+  const workspaceOperationPending = (sessionID: string) =>
+    WorkspaceOperation.get(sdk().scope, sessionID)?.status === "pending"
   const hasReview = () => !!params.id
   const normalizeTab = (tab: string) => {
     if (!tab.startsWith("file://")) return tab
@@ -332,6 +335,7 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
   const undo = async () => {
     const sessionID = params.id
     if (!sessionID) return
+    if (workspaceOperationPending(sessionID)) return
     const owner = sessionOwnership.capture()
     const session = sdk().api.session
     const directory = sdk().directory
@@ -362,6 +366,7 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
   const redo = async () => {
     const sessionID = params.id
     if (!sessionID) return
+    if (workspaceOperationPending(sessionID)) return
     const owner = sessionOwnership.capture()
     const session = sdk().api.session
     const messages = userMessages()
@@ -396,6 +401,7 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
   const compact = async () => {
     const sessionID = params.id
     if (!sessionID) return
+    if (workspaceOperationPending(sessionID)) return
 
     const model = local.model.current()
     if (!model) {
@@ -413,6 +419,9 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
   }
 
   const fork = () => {
+    const sessionID = params.id
+    if (!sessionID) return
+    if (workspaceOperationPending(sessionID)) return
     void openDialog(
       () => import("@/components/dialog-fork"),
       (x) => dialog.show(() => <x.DialogFork />),
@@ -462,7 +471,7 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
       title: language.t("command.session.undo"),
       description: language.t("command.session.undo.description"),
       slash: "undo",
-      disabled: !params.id || visibleUserMessages().length === 0,
+      disabled: !params.id || visibleUserMessages().length === 0 || workspaceOperationPending(params.id),
       onSelect: undo,
     }),
     sessionCommand({
@@ -470,7 +479,7 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
       title: language.t("command.session.redo"),
       description: language.t("command.session.redo.description"),
       slash: "redo",
-      disabled: !params.id || !info()?.revert?.messageID,
+      disabled: !params.id || !info()?.revert?.messageID || workspaceOperationPending(params.id),
       onSelect: redo,
     }),
     sessionCommand({
@@ -478,7 +487,7 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
       title: language.t("command.session.compact"),
       description: language.t("command.session.compact.description"),
       slash: "compact",
-      disabled: !params.id || visibleUserMessages().length === 0,
+      disabled: !params.id || visibleUserMessages().length === 0 || workspaceOperationPending(params.id),
       onSelect: compact,
     }),
     sessionCommand({
@@ -486,7 +495,7 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
       title: language.t("command.session.fork"),
       description: language.t("command.session.fork.description"),
       slash: "fork",
-      disabled: !params.id || visibleUserMessages().length === 0,
+      disabled: !params.id || visibleUserMessages().length === 0 || workspaceOperationPending(params.id),
       onSelect: fork,
     }),
     sessionCommand({

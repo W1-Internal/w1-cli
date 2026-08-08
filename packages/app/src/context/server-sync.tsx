@@ -12,7 +12,7 @@ import { type Accessor, batch, createMemo, getOwner, onCleanup, onMount, untrack
 import { createStore, produce, reconcile } from "solid-js/store"
 import { useLanguage } from "@/context/language"
 import type { InitError } from "../pages/error"
-import { ServerSDK } from "./server-sdk"
+import { ServerSDK, type ServerEvent } from "./server-sdk"
 import {
   bootstrapDirectory,
   bootstrapGlobal,
@@ -46,6 +46,32 @@ import { ServerConnection, useServer } from "./server"
 import { retry } from "@opencode-ai/core/util/retry"
 import type { ServerScope } from "@/utils/server-scope"
 import { createHomeSessionIndexCache } from "./global-sync/home-session-index"
+
+export function captureSessionMove(event: ServerEvent, get: (sessionID: string) => { directory: string } | undefined) {
+  const sessionID =
+    event.current?.type === "session.moved"
+      ? event.current.data.sessionID
+      : event.type === "session.next.moved"
+        ? event.properties.sessionID
+        : undefined
+  if (!sessionID) return
+  return { sessionID, from: get(sessionID)?.directory, refresh: "session.next.moved" as const }
+}
+
+export function shouldRefreshWorkspaceSessions(event: ServerEvent) {
+  const type: string = event.type
+  const current: string | undefined = event.current?.type
+  return (
+    type === "session.created" ||
+    type === "session.updated" ||
+    type === "session.deleted" ||
+    type === "session.next.moved" ||
+    current === "session.moved" ||
+    current === "session.renamed" ||
+    current === "session.archived" ||
+    current === "session.forked"
+  )
+}
 import { persisted } from "@/utils/persist"
 import type { ServerApi } from "@/utils/server"
 import type {
@@ -528,19 +554,55 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
     })
   }
 
+  const reindexSession = (sessionID: string, from?: string) => {
+    const next = session.get(sessionID)
+    if (!next) return
+    indexSession(next)
+    if (!from) return
+    const source = children.children[directoryKey(from)]
+    if (!source) return
+    applyDirectoryEvent({
+      event: {
+        type: "session.moved",
+        properties: {
+          sessionID,
+          projectID: next.projectID,
+          location: { directory: next.directory, workspaceID: next.workspaceID },
+          subpath: next.path,
+        },
+      },
+      directory: from,
+      store: source[0],
+      setStore: source[1],
+      push: queue.push,
+      retainedLimit: sessionMeta.get(directoryKey(from))?.limit,
+      sessionContent: false,
+      permission: session.data.permission,
+      loadLsp() {},
+    })
+  }
+
   const unsub = serverSDK.event.listen((e) => {
     const directory = e.name
     const key = directoryKey(directory)
     const event = e.details
     const eventType: string = event.type
     const recent = bootingRoot || Date.now() - bootedAt < 1500
+    const moved = captureSessionMove(event, session.get)
 
     if (event.current) session.applyV2(event.current)
     session.apply(event)
+    if (moved) reindexSession(moved.sessionID, moved.from)
+    if (shouldRefreshWorkspaceSessions(event)) {
+      void queryClient.invalidateQueries({
+        predicate: (query) =>
+          query.queryKey[0] === serverSDK.scope && query.queryKey[2] === "settings-workspace-sessions",
+      })
+    }
     if (event.type === "session.created" || event.type === "session.updated" || event.type === "session.deleted") {
       homeSessions.apply(event)
     }
-    homeSessions.refresh(event.type)
+    homeSessions.refresh(moved?.refresh ?? event.type)
     if (eventType === "integration.connection.updated") void refreshProviders()
 
     if (directory === "global") {
@@ -572,10 +634,6 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
       return
     }
 
-    if (event.current?.type === "session.moved") {
-      const info = session.get(event.current.data.sessionID)
-      if (info) indexSession(info)
-    }
     if (event.current?.type === "session.forked")
       void session
         .resolve(event.current.data.sessionID, { force: true })
@@ -688,6 +746,7 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
     updateConfig: updateConfigMutation.mutateAsync,
     project: projectApi,
     session,
+    reindexSession,
     homeSessions,
     mcp: {
       toggle: async (directory: string, name: string) => {

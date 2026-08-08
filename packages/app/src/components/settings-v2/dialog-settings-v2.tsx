@@ -10,8 +10,8 @@ import { SettingsProvidersV2 } from "./providers"
 import { SettingsModelsV2 } from "./models"
 import "./settings-v2.css"
 import { SettingsServersV2 } from "./servers"
+import { SettingsWorkspacesV2 } from "./workspaces"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
-import { useLayout } from "@/context/layout"
 import { useTabs } from "@/context/tabs"
 import { useServerSync } from "@/context/server-sync"
 
@@ -22,18 +22,16 @@ export const DialogSettings: Component<{
   const language = useLanguage()
   const platform = usePlatform()
   const dialog = useDialog()
-  const layout = useLayout()
   const tabs = useTabs()
   const serverSync = useServerSync()
   const [tab, setTab] = createSignal(props.defaultValue ?? "general")
   const directory = createMemo(() => {
-    const route = layout.route()
-    if (route.type === "dir-new-sesssion") return route.dir
-    if (route.type === "draft") {
-      const draft = tabs.store.find((item) => item.type === "draft" && item.draftID === route.draftID)
-      return draft?.type === "draft" ? draft.directory : undefined
+    const active = tabs.active()
+    if (active?.type === "draft") return active.directory
+    if (active?.type === "session") {
+      const session = serverSync().session.get(active.sessionId)
+      if (session) return session.directory
     }
-    if (route.type === "session") return serverSync().session.get(route.sessionId)?.directory
     return undefined
   })
 
@@ -58,11 +56,11 @@ export const DialogSettings: Component<{
                   <TabsV2.SectionTitle>{language.t("settings.section.desktop")}</TabsV2.SectionTitle>
                   <div class="flex flex-col gap-1.5 w-full">
                     <TabsV2.Trigger value="general">
-                      <Icon name="sliders" />
+                      <Icon name="sliders" size="small" />
                       {language.t("settings.tab.general")}
                     </TabsV2.Trigger>
                     <TabsV2.Trigger value="shortcuts">
-                      <Icon name="keyboard" />
+                      <Icon name="keyboard" size="small" />
                       {language.t("settings.tab.shortcuts")}
                     </TabsV2.Trigger>
                   </div>
@@ -71,16 +69,20 @@ export const DialogSettings: Component<{
                 <div class="flex flex-col gap-1.5">
                   <TabsV2.SectionTitle>{language.t("settings.section.server")}</TabsV2.SectionTitle>
                   <div class="flex flex-col gap-1.5 w-full">
+                    <TabsV2.Trigger value="workspaces">
+                      <Icon name="workspace-isolated" size="small" />
+                      {language.t("settings.tab.workspaces")}
+                    </TabsV2.Trigger>
                     <TabsV2.Trigger value="servers">
-                      <Icon name="server" />
+                      <Icon name="server" size="small" />
                       {language.t("status.popover.tab.servers")}
                     </TabsV2.Trigger>
                     <TabsV2.Trigger value="providers">
-                      <Icon name="providers" />
+                      <Icon name="providers" size="small" />
                       {language.t("settings.providers.title")}
                     </TabsV2.Trigger>
                     <TabsV2.Trigger value="models">
-                      <Icon name="models" />
+                      <Icon name="models" size="small" />
                       {language.t("settings.models.title")}
                     </TabsV2.Trigger>
                   </div>
@@ -98,6 +100,9 @@ export const DialogSettings: Component<{
         </TabsV2.Content>
         <TabsV2.Content value="shortcuts" class="settings-v2-panel">
           <SettingsKeybinds v2 />
+        </TabsV2.Content>
+        <TabsV2.Content value="workspaces" class="settings-v2-panel">
+          <SettingsWorkspacesV2 activeDirectory={directory()} />
         </TabsV2.Content>
         <TabsV2.Content value="servers" class="settings-v2-panel">
           <SettingsServersV2 />

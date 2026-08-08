@@ -223,6 +223,23 @@ describe("server session", () => {
     expect(ctx.store.lineage.peek("child")).toEqual(result)
   })
 
+  test("applies moved session locations without evicting cached state", () => {
+    const current = { ...session("child"), directory: "/repo/worktree", path: undefined }
+    const ctx = setup({ child: current })
+    ctx.store.remember(current)
+
+    ctx.store.apply({
+      type: "session.next.moved",
+      properties: {
+        sessionID: "child",
+        location: { directory: "/repo" },
+        subdirectory: "packages/app",
+      },
+    })
+
+    expect(ctx.store.get("child")).toMatchObject({ directory: "/repo", path: "packages/app" })
+  })
+
   test("loads session content through the server client", async () => {
     const ctx = setup({ root: session("root") })
 

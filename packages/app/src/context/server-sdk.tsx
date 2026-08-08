@@ -13,6 +13,8 @@ import { useGlobal } from "./global"
 import { ServerScope } from "@/utils/server-scope"
 import { detectServerProtocol, type ServerProtocol } from "@/utils/server-protocol"
 import { createCompatibleApi, type CompatibleApi } from "@/utils/server-compat"
+import { Worktree } from "@/utils/worktree"
+import { WorkspaceOperation } from "@/utils/workspace-operation"
 
 const isAbortError = (error: unknown) =>
   error !== null && typeof error === "object" && "name" in error && error.name === "AbortError"
@@ -54,6 +56,11 @@ export function adaptServerEvent(event: OpenCodeEvent): ServerEvent {
   if (event.type === "question.v2.rejected")
     return { id: event.id, type: "question.rejected", properties: event.data, current: event } as ServerEvent
   return { id: event.id, type: event.type, properties: event.data, current: event } as ServerEvent
+}
+
+export function adaptWorktreeCompatibilityEvent(event: { directory?: string; payload: Event }) {
+  if (event.payload.type !== "worktree.ready" && event.payload.type !== "worktree.failed") return
+  return { directory: event.directory ?? "global", payload: event.payload }
 }
 
 const coalescedKey = (event: QueuedServerEvent) => {
@@ -138,6 +145,31 @@ export function coalesceServerEvents(events: QueuedServerEvent[]) {
   return output
 }
 
+export function applyWorktreeEvent(scope: ServerScope, event: QueuedServerEvent, fallback: string) {
+  if (event.payload.type === "worktree.ready") {
+    Worktree.ready(scope, event.directory)
+    return true
+  }
+  if (event.payload.type !== "worktree.failed") return false
+  const message = event.payload.properties.message ?? fallback
+  Worktree.failed(scope, event.directory, message)
+  return true
+}
+
+export function applyWorkspaceOperationEvent(scope: ServerScope, event: QueuedServerEvent) {
+  if (event.payload.current?.type === "session.moved") {
+    WorkspaceOperation.complete(
+      scope,
+      event.payload.current.data.sessionID,
+      event.payload.current.data.location.directory,
+    )
+    return true
+  }
+  if (event.payload.type !== "session.next.moved") return false
+  WorkspaceOperation.complete(scope, event.payload.properties.sessionID, event.payload.properties.location.directory)
+  return true
+}
+
 function currentDelta(event: OpenCodeEvent | undefined): CurrentDelta | undefined {
   if (
     event?.type === "session.text.delta" ||
@@ -186,6 +218,7 @@ type ServerSDKBase = {
 
 function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerScope): ServerSDKBase {
   const platform = usePlatform()
+  const language = useLanguage()
   const abort = new AbortController()
 
   const eventFetch = (() => {
@@ -238,7 +271,11 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
     last = Date.now()
     const output = coalesceServerEvents(events)
     batch(() => {
-      output.forEach((event) => emitter.emit(event.directory, event.payload))
+      output.forEach((event) => {
+        applyWorktreeEvent(scope, event, language.t("common.requestFailed"))
+        applyWorkspaceOperationEvent(scope, event)
+        emitter.emit(event.directory, event.payload)
+      })
     })
 
     buffer.length = 0
@@ -251,11 +288,56 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
   }
 
   let streamErrorLogged = false
+  let worktreeStreamErrorLogged = false
   const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
   let attempt: AbortController | undefined
+  let worktreeAttempt: AbortController | undefined
   let run: Promise<void> | undefined
   let started = false
   let generation = 0
+
+  const consumeWorktreeEvents = async (active: number) => {
+    // Current worktree lifecycle events are still emitted only on the global compatibility stream.
+    while (!abort.signal.aborted && started && generation === active) {
+      const controller = new AbortController()
+      worktreeAttempt = controller
+      const onAbort = () => controller.abort()
+      abort.signal.addEventListener("abort", onAbort)
+      try {
+        const events = (await eventSdk.global.event({ signal: controller.signal })).stream
+        let yielded = Date.now()
+        for await (const event of events) {
+          const queued = adaptWorktreeCompatibilityEvent({
+            directory: event.directory,
+            payload: event.payload as Event,
+          })
+          if (queued) {
+            worktreeStreamErrorLogged = false
+            if (enqueueServerEvent(queue, queued)) schedule()
+          }
+
+          if (Date.now() - yielded < STREAM_YIELD_MS) continue
+          yielded = Date.now()
+          await wait(0)
+        }
+      } catch (error) {
+        if (!isStreamClosed(error, controller.signal) && !worktreeStreamErrorLogged) {
+          worktreeStreamErrorLogged = true
+          console.error("[global-sdk] worktree event stream failed", {
+            url: server.http.url,
+            fetch: eventFetch ? "platform" : "webview",
+            error,
+          })
+        }
+      } finally {
+        abort.signal.removeEventListener("abort", onAbort)
+        if (worktreeAttempt === controller) worktreeAttempt = undefined
+      }
+
+      if (abort.signal.aborted || !started || generation !== active) return
+      await wait(RECONNECT_DELAY_MS)
+    }
+  }
 
   const start = () => {
     if (started) return run
@@ -264,6 +346,8 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
     const previous = run
     const current = (async () => {
       if (previous) await previous
+      const kind = await protocol
+      if (kind === "v2") void consumeWorktreeEvents(active)
       // oxlint-disable-next-line no-unmodified-loop-condition -- `started` is set to false by stop() which also aborts; both flags are checked to allow graceful exit
       while (!abort.signal.aborted && started && generation === active) {
         attempt = new AbortController()
@@ -272,7 +356,6 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
         }
         abort.signal.addEventListener("abort", onAbort)
         try {
-          const kind = await protocol
           const events =
             kind === "v1"
               ? (await eventSdk.global.event({ signal: attempt.signal })).stream
@@ -320,6 +403,7 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
     started = false
     generation++
     attempt?.abort()
+    worktreeAttempt?.abort()
   }
 
   onMount(() => {
@@ -433,6 +517,14 @@ function createDirSdkContext(directory: string, serverSDK: ServerSDKBase) {
       legacy: (next) => serverSDK.createClient({ directory: next ?? directory, throwOnError: true }),
       directory,
     }),
+    createApi(next: string) {
+      return createCompatibleApi({
+        protocol: serverSDK.protocol,
+        current: serverSDK.currentApi,
+        legacy: (target) => serverSDK.createClient({ directory: target ?? next, throwOnError: true }),
+        directory: next,
+      })
+    },
     event: emitter,
     get url() {
       return serverSDK.url

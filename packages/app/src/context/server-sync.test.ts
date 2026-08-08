@@ -1,18 +1,26 @@
 import { describe, expect, test } from "bun:test"
-import type { OpencodeClient } from "@opencode-ai/sdk/v2/client"
+import type { Event, OpencodeClient, Session } from "@opencode-ai/sdk/v2/client"
 import type {
   McpListInput,
   McpResourceCatalogInput,
   SessionApi,
   SessionInfo,
   SessionListInput,
+  OpenCodeEvent,
 } from "@opencode-ai/client/promise"
 import { QueryClient } from "@tanstack/solid-query"
 import { canDisposeDirectory, pickDirectoriesToEvict } from "./global-sync/eviction"
 import { estimateRootSessionTotal, loadRootSessions } from "./global-sync/session-load"
-import { loadActiveSessionsQuery, loadMcpQuery, loadMcpResourcesQuery, seedActiveSessionStatuses } from "./server-sync"
+import {
+  captureSessionMove,
+  loadActiveSessionsQuery,
+  loadMcpQuery,
+  loadMcpResourcesQuery,
+  seedActiveSessionStatuses,
+} from "./server-sync"
 import { ServerScope } from "@/utils/server-scope"
 import { createServerSession } from "./server-session"
+import { adaptServerEvent } from "./server-sdk"
 import type { ServerApi } from "@/utils/server"
 
 type McpApi = ServerApi["mcp"]
@@ -102,6 +110,52 @@ describe("active session query", () => {
   })
 })
 
+describe("session move normalization", () => {
+  test("captures and applies current moves from the source placement", () => {
+    const session = createServerSession({} as OpencodeClient)
+    session.remember(sessionAt("/source"))
+    const current = {
+      id: "event-current-move",
+      created: 10,
+      type: "session.moved",
+      data: { sessionID: "session", location: { directory: "/destination" } },
+    } as OpenCodeEvent
+    const event = adaptServerEvent(current)
+
+    expect(captureSessionMove(event, session.get)).toEqual({
+      sessionID: "session",
+      from: "/source",
+      refresh: "session.next.moved",
+    })
+    session.applyV2(current)
+    session.apply(event)
+    expect(session.get("session")?.directory).toBe("/destination")
+  })
+
+  test("captures and applies V1 moves from the source placement", () => {
+    const session = createServerSession({} as OpencodeClient)
+    session.remember(sessionAt("/source"))
+    const event = {
+      type: "session.next.moved",
+      properties: {
+        timestamp: 10,
+        sessionID: "session",
+        location: { directory: "/destination" },
+        subdirectory: "packages/app",
+      },
+    } as Event
+
+    expect(captureSessionMove(event, session.get)).toEqual({
+      sessionID: "session",
+      from: "/source",
+      refresh: "session.next.moved",
+    })
+    session.apply(event)
+    expect(session.get("session")).toMatchObject({ directory: "/destination", path: "packages/app" })
+  })
+
+})
+
 describe("pickDirectoriesToEvict", () => {
   test("keeps pinned stores and evicts idle stores", () => {
     const now = 5_000
@@ -172,6 +226,18 @@ function sessionInfo(id: string) {
     title: id,
     location: { directory: "dir" },
   } as SessionInfo
+}
+
+function sessionAt(directory: string): Session {
+  return {
+    id: "session",
+    slug: "session",
+    projectID: "project",
+    directory,
+    title: "Session",
+    version: "",
+    time: { created: 1, updated: 1 },
+  }
 }
 
 describe("estimateRootSessionTotal", () => {

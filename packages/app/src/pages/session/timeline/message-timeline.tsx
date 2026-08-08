@@ -28,6 +28,7 @@ import {
   type UserActions,
 } from "@opencode-ai/session-ui/message-part"
 import { DiffChanges } from "@opencode-ai/ui/diff-changes"
+import { DiffChanges as DiffChangesV2 } from "@opencode-ai/ui/v2/diff-changes-v2"
 import { FileIcon } from "@opencode-ai/ui/file-icon"
 import { Icon } from "@opencode-ai/ui/icon"
 import { IconButton } from "@opencode-ai/ui/icon-button"
@@ -35,6 +36,8 @@ import { Icon as IconV2 } from "@opencode-ai/ui/v2/icon"
 import { IconButtonV2 } from "@opencode-ai/ui/v2/icon-button-v2"
 import { DropdownMenu } from "@opencode-ai/ui/dropdown-menu"
 import { MenuV2 } from "@opencode-ai/ui/v2/menu-v2"
+import { TooltipV2 } from "@opencode-ai/ui/v2/tooltip-v2"
+import { ProjectAvatar } from "@opencode-ai/ui/v2/project-avatar-v2"
 import { Dialog } from "@opencode-ai/ui/dialog"
 import { DialogFooter, DialogHeader, DialogTitleGroup, DialogV2 } from "@opencode-ai/ui/v2/dialog-v2"
 import { InlineInput } from "@opencode-ai/ui/inline-input"
@@ -49,6 +52,7 @@ import type {
   AssistantMessage,
   Message as MessageType,
   Part as PartType,
+  Project,
   ToolPart,
   UserMessage,
 } from "@opencode-ai/sdk/v2"
@@ -64,6 +68,7 @@ import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { useLanguage } from "@/context/language"
 import { useSessionKey } from "@/pages/session/session-layout"
 import { useServerSDK } from "@/context/server-sdk"
+import { useServerSync } from "@/context/server-sync"
 import { usePlatform } from "@/context/platform"
 import { useSettings } from "@/context/settings"
 import { useTabs } from "@/context/tabs"
@@ -77,6 +82,12 @@ import { observeElementOffsetReconnectAware } from "./observe-element-offset"
 import { createTimelineProjection } from "./projection"
 import { MessageComment, SummaryDiff, TimelineRow, TimelineRowMap } from "./rows"
 import { filterVirtualIndexes } from "./virtual-items"
+import { isWorkspaceDirectory } from "@/utils/workspace"
+import { useCommand } from "@/context/command"
+import { WorkspaceOperation } from "@/utils/workspace-operation"
+import { SessionWorkspaceMenu } from "@/components/session-workspace-menu"
+import { getProjectAvatarVariant } from "@/context/layout"
+import { displayName, getProjectAvatarSource } from "@/pages/layout/helpers"
 
 const emptyMessages: MessageType[] = []
 const emptyParts: PartType[] = []
@@ -142,7 +153,7 @@ function TimelineThinkingRow(props: { reasoningHeading?: string; showReasoningSu
   )
 }
 
-function TimelineDiffSummaryRow(props: { diffs: SummaryDiff[] }) {
+function TimelineDiffSummaryRow(props: { diffs: SummaryDiff[]; action?: JSX.Element }) {
   const language = useLanguage()
   const maxFiles = 10
   const [state, setState] = createStore({
@@ -170,6 +181,7 @@ function TimelineDiffSummaryRow(props: { diffs: SummaryDiff[] }) {
             {showAll() ? language.t("ui.sessionTurn.diffs.showLess") : language.t("ui.sessionTurn.diffs.showAll")}
           </span>
         </Show>
+        {props.action}
       </div>
       <div data-component="session-turn-diffs-content">
         <Accordion
@@ -224,6 +236,178 @@ function TimelineDiffSummaryRow(props: { diffs: SummaryDiff[] }) {
   )
 }
 
+function WorkspaceLocationLoader() {
+  const dots = ["left-0 top-0", "right-0 top-0", "left-0 bottom-0", "right-0 bottom-0"]
+  return (
+    <span data-component="workspace-location-loader" class="relative block size-4" aria-hidden="true">
+      <span class="absolute left-[7px] top-[7px] size-0.5 bg-current" />
+      <For each={dots}>
+        {(position, index) => (
+          <span
+            class={`absolute size-1 bg-current ${position} animate-pulse`}
+            style={{ "animation-delay": `${index() * -180}ms` }}
+          />
+        )}
+      </For>
+    </span>
+  )
+}
+
+function WorkspaceMoveAction(props: {
+  variant: "inline" | "panel"
+  eligible: boolean
+  sessionID: string
+  project: Project
+  directory: string
+  messageID?: string
+  dismissed: boolean
+  onDismiss: () => void
+}) {
+  const language = useLanguage()
+  const inline = () => props.variant === "inline"
+  return (
+    <div
+      classList={{
+        "group/workspace-move relative shrink-0": true,
+        "ml-auto h-5 w-[167px]": inline(),
+        "-mt-2.5 h-[46px] w-full rounded-b-[6px] bg-v2-background-bg-layer-02 hover:bg-v2-background-bg-layer-03 transition-colors":
+          !inline(),
+        invisible: props.dismissed,
+      }}
+    >
+      <SessionWorkspaceMenu
+        eligible={props.eligible}
+        sessionID={props.sessionID}
+        project={props.project}
+        directory={props.directory}
+        messageID={props.messageID}
+        placement={inline() ? "bottom-end" : "left-start"}
+        gutter={inline() ? 4 : -22}
+        contentClass={inline() ? undefined : "relative top-3.5"}
+        class={
+          inline()
+            ? "flex h-5 w-full items-center gap-1.5 rounded-[4px] pr-6 text-[13px] font-[440] leading-5 tracking-[-0.04px] text-v2-text-text-faint hover:bg-v2-overlay-simple-overlay-hover focus-visible:bg-v2-overlay-simple-overlay-hover focus-visible:outline-none data-[expanded]:bg-v2-overlay-simple-overlay-pressed"
+            : "flex h-[46px] w-full items-center gap-2 rounded-b-[6px] px-3 pr-9 pt-2.5 text-[13px] font-[440] leading-5 tracking-[-0.04px] text-v2-text-text-muted focus-visible:outline-none"
+        }
+      >
+        <IconV2 name="workspace-new" class="shrink-0 text-v2-icon-icon-muted" />
+        <span class="min-w-0 truncate">{language.t("workspace.move.title")}</span>
+      </SessionWorkspaceMenu>
+      <button
+        type="button"
+        class={`absolute flex size-5 -translate-y-1/2 items-center justify-center rounded-[4px] text-v2-icon-icon-muted hover:bg-v2-overlay-simple-overlay-hover hover:text-v2-icon-icon-base focus-visible:bg-v2-overlay-simple-overlay-hover focus-visible:text-v2-icon-icon-base focus-visible:outline-none ${
+          inline()
+            ? "right-0 top-1/2"
+            : "hover-reveal right-3 top-[calc(50%+5px)] group-hover/workspace-move:opacity-100 group-focus-within/workspace-move:opacity-100"
+        }`}
+        aria-label={language.t("common.dismiss")}
+        onClick={(event) => {
+          event.stopPropagation()
+          props.onDismiss()
+        }}
+      >
+        <IconV2 name="xmark-small" />
+      </button>
+    </div>
+  )
+}
+
+function SessionSummaryPanel(props: {
+  project: Project
+  directory: string
+  local: boolean
+  branch?: string
+  baseBranch?: string
+  diffs: { additions: number; deletions: number }[]
+  sessionID: string
+  moveEligible: boolean
+  messageID?: string
+  moveDismissed: boolean
+  onMoveDismiss: () => void
+  onReview: () => void
+}) {
+  const language = useLanguage()
+  const location = () => (props.local ? language.t("session.new.workspace.local") : getFilename(props.directory))
+  const branch = () => props.branch ?? props.baseBranch
+  const row =
+    "flex h-7 w-full items-center gap-2 rounded-[4px] px-3 text-[13px] font-[440] leading-5 tracking-[-0.04px] text-v2-text-text-base"
+
+  return (
+    <div data-component="session-summary-panel" class="w-[280px]">
+      <div class="relative z-10 flex flex-col gap-1 overflow-hidden rounded-[6px] bg-v2-background-bg-base px-0.5 py-1.5 shadow-[var(--v2-elevation-raised)]">
+        <div class={row}>
+          <ProjectAvatar
+            fallback={displayName(props.project)}
+            src={getProjectAvatarSource(props.project.id, props.project.icon)}
+            variant={getProjectAvatarVariant(props.project.icon?.color)}
+          />
+          <span class="min-w-0 flex-1 truncate text-v2-text-text-muted">{displayName(props.project)}</span>
+        </div>
+        <SessionWorkspaceMenu
+          sessionID={props.sessionID}
+          project={props.project}
+          directory={props.directory}
+          messageID={props.messageID}
+          placement="left-start"
+          gutter={-22}
+          class={`${row} hover:bg-v2-overlay-simple-overlay-hover focus-visible:bg-v2-overlay-simple-overlay-hover focus-visible:outline-none data-[expanded]:bg-v2-overlay-simple-overlay-pressed`}
+        >
+          <IconV2 name={props.local ? "monitor" : "workspace-isolated"} class="shrink-0 text-v2-icon-icon-muted" />
+          <span class="min-w-0 flex-1 truncate text-left">{location()}</span>
+          <IconV2 name="chevron-down" size="small" class="shrink-0 text-v2-icon-icon-muted" />
+        </SessionWorkspaceMenu>
+        <div class={row}>
+          <IconV2 name="branch" class="shrink-0 text-v2-icon-icon-muted" />
+          <Show
+            when={props.branch}
+            fallback={
+              <span class="flex min-w-0 items-center gap-1.5">
+                <span>{language.t("session.summary.noBranch")}</span>
+                <Show when={props.baseBranch}>
+                  {(base) => (
+                    <>
+                      <span class="text-v2-text-text-muted">·</span>
+                      <span class="truncate text-v2-text-text-faint">
+                        {language.t("session.summary.basedOn", { branch: base() })}
+                      </span>
+                    </>
+                  )}
+                </Show>
+              </span>
+            }
+          >
+            <span class="min-w-0 truncate">{branch()}</span>
+          </Show>
+        </div>
+        <button
+          type="button"
+          class={`${row} hover:bg-v2-overlay-simple-overlay-hover focus-visible:bg-v2-overlay-simple-overlay-hover focus-visible:outline-none`}
+          onClick={props.onReview}
+        >
+          <IconV2 name="review" class="shrink-0 text-v2-icon-icon-muted" />
+          <Show when={props.diffs.length > 0} fallback={<span>{language.t("session.review.noChanges")}</span>}>
+            <span>{language.plural("ui.sessionTurn.diffs.changed", props.diffs.length)}</span>
+            <span class="text-v2-text-text-muted">·</span>
+            <DiffChangesV2 changes={props.diffs} />
+          </Show>
+        </button>
+      </div>
+      <Show when={props.local && props.diffs.length > 0 && props.moveEligible}>
+        <WorkspaceMoveAction
+          variant="panel"
+          eligible={props.moveEligible}
+          sessionID={props.sessionID}
+          project={props.project}
+          directory={props.directory}
+          messageID={props.messageID}
+          dismissed={props.moveDismissed}
+          onDismiss={props.onMoveDismiss}
+        />
+      </Show>
+    </div>
+  )
+}
+
 function TimelineDiffView(props: { diff: SummaryDiff }) {
   const fileComponent = useFileComponent()
   const view = normalize(props.diff)
@@ -251,6 +435,9 @@ export function MessageTimeline(props: {
   centered: boolean
   setContentRef: (el: HTMLDivElement) => void
   userMessages: UserMessage[]
+  diffs: Accessor<{ additions: number; deletions: number }[]>
+  workspaceMoveEligible: boolean
+  onSummaryOpenChange: (open: boolean) => void
   anchor: (id: string) => string
   setRevealMessage?: (fn: (id: string) => void) => void
   setScrollToEnd?: (fn: () => void) => void
@@ -260,12 +447,14 @@ export function MessageTimeline(props: {
 
   const navigate = useNavigate()
   const serverSDK = useServerSDK()
+  const serverSync = useServerSync()
   const sdk = useSDK()
   const sync = useSync()
   const settings = useSettings()
   const tabs = useTabs()
   const dialog = useDialog()
   const language = useLanguage()
+  const command = useCommand()
   const { params, sessionKey } = useSessionKey()
   const ownerSessionKey = sessionKey()
   const cached = timelineCache.get(ownerSessionKey)
@@ -298,6 +487,43 @@ export function MessageTimeline(props: {
   })
   const titleValue = createMemo(() => info()?.title)
   const titleLabel = createMemo(() => sessionTitle(titleValue()))
+  const sessionDirectory = createMemo(() => info()?.directory ?? sdk().directory)
+  const workspaceSession = createMemo(() => isWorkspaceDirectory(sync().project, sessionDirectory()))
+  const [workspaceSuggestionDismissed, setWorkspaceSuggestionDismissed] = createSignal(false)
+  const [summaryOpen, setSummaryOpen] = createSignal(false)
+  const setSummary = (open: boolean) => {
+    setSummaryOpen(open)
+    props.onSummaryOpenChange(open)
+  }
+  const sessionDiffs = createMemo(props.diffs)
+  createEffect(
+    on(sessionID, () => {
+      setSummary(false)
+      setWorkspaceSuggestionDismissed(false)
+    }),
+  )
+  const turnPadding = () => "px-4 md:px-5"
+  const workspaceOperation = createMemo(() => {
+    const id = sessionID()
+    if (!id) return
+    return WorkspaceOperation.get(serverSDK().scope, id)
+  })
+  const lifecycleTitle = createMemo(() => {
+    const operation = workspaceOperation()
+    if (operation?.status === "pending") {
+      return {
+        kind: "pending" as const,
+        text: language.t(operation.type === "create" ? "workspace.lifecycle.creating" : "workspace.lifecycle.moving"),
+      }
+    }
+    if (operation?.type === "create" && titleValue()?.startsWith("New session"))
+      return { kind: "created" as const, text: language.t("workspace.lifecycle.created") }
+    if (titleValue()?.startsWith("New session"))
+      return { kind: "starting" as const, text: language.t("workspace.lifecycle.starting") }
+    return
+  })
+  const workspaceOperationPending = (sessionID: string) =>
+    WorkspaceOperation.get(serverSDK().scope, sessionID)?.status === "pending"
   const shareUrl = createMemo(() => info()?.share?.url)
   const shareEnabled = createMemo(() => sync().data.config.share !== "disabled")
   const parentID = createMemo(() => info()?.parentID)
@@ -329,7 +555,7 @@ export function MessageTimeline(props: {
     if (value) return value
     return language.t("command.session.new")
   })
-  const showHeader = createMemo(() => !!(titleValue() || parentID()))
+  const showHeader = createMemo(() => !!(titleValue() || parentID() || workspaceSession()))
   const projection = createTimelineProjection({
     messages: sessionMessages,
     userMessages: () => props.userMessages,
@@ -338,6 +564,19 @@ export function MessageTimeline(props: {
     status: sessionStatus,
     showReasoningSummaries: settings.general.showReasoningSummaries,
     inlineComments: settings.general.newLayoutDesigns,
+    extensionRevision: workspaceOperation,
+    afterUser: (message) => {
+      const operation = workspaceOperation()
+      if (!operation) return []
+      if (operation.messageID !== message.id && (operation.messageID || message.id !== props.userMessages.at(-1)?.id))
+        return []
+      return [
+        new TimelineRow.WorkspaceLifecycle({
+          userMessageID: message.id,
+          notice: { type: "operation", operation },
+        }),
+      ]
+    },
   })
   const activeMessageID = projection.activeMessageID
   const assistantMessagesByParent = projection.assistantMessagesByParent
@@ -833,6 +1072,7 @@ export function MessageTimeline(props: {
   }
 
   const archiveSession = async (sessionID: string) => {
+    if (workspaceOperationPending(sessionID)) return
     const session = sync().session.get(sessionID)
     if (!session) return
     if ((await sdk().protocol) !== "v1") return
@@ -863,6 +1103,7 @@ export function MessageTimeline(props: {
   }
 
   const deleteSession = async (sessionID: string) => {
+    if (workspaceOperationPending(sessionID)) return false
     const session = sync().session.get(sessionID)
     if (!session) return false
 
@@ -956,7 +1197,7 @@ export function MessageTimeline(props: {
             <ButtonV2 variant="ghost" onClick={() => dialog.close()}>
               {language.t("common.cancel")}
             </ButtonV2>
-            <ButtonV2 variant="danger" onClick={handleDelete}>
+            <ButtonV2 variant="danger" disabled={workspaceOperationPending(props.sessionID)} onClick={handleDelete}>
               {language.t("session.delete.button")}
             </ButtonV2>
           </DialogFooter>
@@ -975,7 +1216,12 @@ export function MessageTimeline(props: {
             <Button variant="ghost" size="large" onClick={() => dialog.close()}>
               {language.t("common.cancel")}
             </Button>
-            <Button variant="primary" size="large" onClick={handleDelete}>
+            <Button
+              variant="primary"
+              size="large"
+              disabled={workspaceOperationPending(props.sessionID)}
+              onClick={handleDelete}
+            >
               {language.t("session.delete.button")}
             </Button>
           </div>
@@ -1128,7 +1374,7 @@ export function MessageTimeline(props: {
         )
         return (
           <TimelineRowFrame row={commentStripRow}>
-            <div class="w-full px-4 md:px-5 pb-2">
+            <div class={`w-full pb-2 ${turnPadding()}`}>
               <div class="ms-auto max-w-[82%] overflow-x-auto no-scrollbar">
                 <div class="flex w-max min-w-full justify-end gap-2">
                   <Index each={comments()}>
@@ -1179,7 +1425,7 @@ export function MessageTimeline(props: {
           <TimelineRowFrame row={userMessageRow}>
             <Show when={message()}>
               {(message) => (
-                <div data-slot="session-turn-message-container" class="w-full px-4 md:px-5">
+                <div data-slot="session-turn-message-container" class={`w-full ${turnPadding()}`}>
                   <div data-slot="session-turn-message-content" aria-live="off">
                     <Message
                       message={message()}
@@ -1195,11 +1441,55 @@ export function MessageTimeline(props: {
           </TimelineRowFrame>
         )
       }
+      case "WorkspaceLifecycle": {
+        const workspaceRow = row as Accessor<TimelineRowByTag<"WorkspaceLifecycle">>
+        const operation = () => workspaceRow().notice.operation
+        const pending = () => operation().status === "pending"
+        const status = () => {
+          if (operation().status === "failed") return language.t("workspace.move.failed")
+          if (operation().type === "create")
+            return language.t(pending() ? "workspace.lifecycle.creating" : "workspace.lifecycle.created")
+          return language.t(pending() ? "workspace.lifecycle.moving" : "workspace.lifecycle.set")
+        }
+        const directory = () => getFilename(operation().directory)
+        return (
+          <TimelineRowFrame row={workspaceRow}>
+            <div class={`w-full ${turnPadding()}`} aria-live="polite">
+              <div class="flex h-7 items-center py-1 text-[13px] font-[440] leading-none tracking-[-0.04px]">
+                <Show
+                  when={!pending()}
+                  fallback={
+                    <div class="flex items-center gap-1.5">
+                      <TextShimmer text={status()} />
+                    </div>
+                  }
+                >
+                  <div
+                    classList={{
+                      "flex items-center gap-1.5": true,
+                      "text-v2-state-fg-danger": operation().status === "failed",
+                    }}
+                  >
+                    <span class={operation().status === "failed" ? "" : "text-v2-text-text-base"}>{status()}</span>
+                    <Show when={operation().status !== "failed"}>
+                      <span class="text-[11px] font-[530] italic text-v2-text-text-muted">·</span>
+                      <IconV2 name="workspace-isolated" class="shrink-0 text-v2-icon-icon-accent" />
+                      <Show when={directory()}>
+                        <span class="max-w-[240px] truncate text-v2-text-text-base">{directory()}</span>
+                      </Show>
+                    </Show>
+                  </div>
+                </Show>
+              </div>
+            </div>
+          </TimelineRowFrame>
+        )
+      }
       case "TurnDivider": {
         const turnDividerRow = row as Accessor<TimelineRowByTag<"TurnDivider">>
         return (
           <TimelineRowFrame row={turnDividerRow}>
-            <div data-slot="session-turn-message-container" class="w-full px-4 md:px-5">
+            <div data-slot="session-turn-message-container" class={`w-full ${turnPadding()}`}>
               <div data-slot="session-turn-compaction">
                 <MessageDivider
                   label={language.t(
@@ -1215,7 +1505,7 @@ export function MessageTimeline(props: {
         const assistantPartRow = row as Accessor<TimelineRowByTag<"AssistantPart">>
         return (
           <TimelineRowFrame row={assistantPartRow}>
-            <div data-slot="session-turn-message-container" class="w-full px-4 md:px-5">
+            <div data-slot="session-turn-message-container" class={`w-full ${turnPadding()}`}>
               <div
                 data-slot="session-turn-assistant-content"
                 aria-hidden={workingTurn(assistantPartRow().userMessageID)}
@@ -1230,7 +1520,7 @@ export function MessageTimeline(props: {
         const thinkingRow = row as Accessor<TimelineRowByTag<"Thinking">>
         return (
           <TimelineRowFrame row={thinkingRow}>
-            <div data-slot="session-turn-message-container" class="w-full px-4 md:px-5">
+            <div data-slot="session-turn-message-container" class={`w-full ${turnPadding()}`}>
               <TimelineThinkingRow
                 reasoningHeading={thinkingRow().reasoningHeading}
                 showReasoningSummaries={settings.general.showReasoningSummaries()}
@@ -1243,7 +1533,7 @@ export function MessageTimeline(props: {
         const retryRow = row as Accessor<TimelineRowByTag<"Retry">>
         return (
           <TimelineRowFrame row={retryRow}>
-            <div data-slot="session-turn-message-container" class="w-full px-4 md:px-5">
+            <div data-slot="session-turn-message-container" class={`w-full ${turnPadding()}`}>
               <SessionRetry status={sessionStatus()} show={activeMessageID() === retryRow().userMessageID} />
             </div>
           </TimelineRowFrame>
@@ -1251,10 +1541,35 @@ export function MessageTimeline(props: {
       }
       case "DiffSummary": {
         const diffSummaryRow = row as Accessor<TimelineRowByTag<"DiffSummary">>
+        const canMove = () =>
+          settings.general.newLayoutDesigns() &&
+          diffSummaryRow().userMessageID === props.userMessages.at(-1)?.id &&
+          !workspaceSession() &&
+          props.workspaceMoveEligible &&
+          sync().project?.vcs === "git" &&
+          sessionStatus().type === "idle"
         return (
           <TimelineRowFrame row={diffSummaryRow}>
-            <div data-slot="session-turn-message-container" class="w-full px-4 md:px-5">
-              <TimelineDiffSummaryRow diffs={diffSummaryRow().diffs} />
+            <div data-slot="session-turn-message-container" class={`w-full ${turnPadding()}`}>
+              <TimelineDiffSummaryRow
+                diffs={diffSummaryRow().diffs}
+                action={
+                  <Show when={canMove() && sync().project}>
+                    {(project) => (
+                      <WorkspaceMoveAction
+                        variant="inline"
+                        eligible={props.workspaceMoveEligible}
+                        sessionID={sessionID()!}
+                        project={project()}
+                        directory={sessionDirectory()}
+                        messageID={diffSummaryRow().userMessageID}
+                        dismissed={workspaceSuggestionDismissed()}
+                        onDismiss={() => setWorkspaceSuggestionDismissed(true)}
+                      />
+                    )}
+                  </Show>
+                }
+              />
             </div>
           </TimelineRowFrame>
         )
@@ -1263,7 +1578,7 @@ export function MessageTimeline(props: {
         const errorRow = row as Accessor<TimelineRowByTag<"Error">>
         return (
           <TimelineRowFrame row={errorRow}>
-            <div data-slot="session-turn-message-container" class="w-full px-4 md:px-5">
+            <div data-slot="session-turn-message-container" class={`w-full ${turnPadding()}`}>
               <Card variant="error" class="error-card">
                 {errorRow().text}
               </Card>
@@ -1345,7 +1660,7 @@ export function MessageTimeline(props: {
   }
 
   return (
-    <div class="relative w-full h-full min-w-0">
+    <div class="relative w-full h-full min-w-0" data-workspace-session={workspaceSession() ? "" : undefined}>
       <div
         class="absolute left-1/2 -translate-x-1/2 z-[60] pointer-events-none transition-all duration-200 ease-out"
         classList={{
@@ -1440,6 +1755,39 @@ export function MessageTimeline(props: {
                 }}
               >
                 <div class="flex items-center min-w-0 flex-1 w-full">
+                  <Show when={settings.general.newLayoutDesigns()}>
+                    <Show
+                      when={workspaceOperation()?.status !== "pending"}
+                      fallback={
+                        <span class="flex size-6 shrink-0 items-center justify-center text-v2-icon-icon-muted">
+                          <WorkspaceLocationLoader />
+                        </span>
+                      }
+                    >
+                      <Show
+                        when={workspaceSession()}
+                        fallback={
+                          <span class="flex size-6 shrink-0 items-center justify-center text-v2-icon-icon-muted">
+                            <IconV2 name="monitor" />
+                          </span>
+                        }
+                      >
+                        <TooltipV2
+                          placement="bottom-start"
+                          value={sessionDirectory()}
+                          contentClass="max-w-[calc(100vw-32px)] break-all"
+                        >
+                          <span
+                            tabIndex={0}
+                            aria-label={sessionDirectory()}
+                            class="flex size-6 shrink-0 items-center justify-center text-v2-icon-icon-accent"
+                          >
+                            <IconV2 name="workspace-isolated" />
+                          </span>
+                        </TooltipV2>
+                      </Show>
+                    </Show>
+                  </Show>
                   <Show when={parentID()}>
                     <button
                       type="button"
@@ -1457,57 +1805,73 @@ export function MessageTimeline(props: {
                       /
                     </span>
                   </Show>
-                  <Show when={childTitle() || title.editing}>
-                    <Show
-                      when={title.editing}
-                      fallback={
-                        <h1
-                          data-slot="session-title-child"
-                          classList={{
-                            "truncate text-[13px] font-[530] leading-4 tracking-[-0.04px] text-v2-text-text-base": true,
-                            "w-fit rounded-[6px] px-2 py-1 hover:bg-v2-overlay-simple-overlay-hover":
-                              settings.general.newLayoutDesigns(),
-                            "grow-1 min-w-0": !settings.general.newLayoutDesigns(),
+                  <Show
+                    when={!lifecycleTitle()}
+                    fallback={
+                      <span
+                        class="px-2 text-[13px] font-[530] leading-4 tracking-[-0.04px]"
+                        classList={{ "text-v2-text-text-base": lifecycleTitle()?.kind === "created" }}
+                        aria-live="polite"
+                      >
+                        <Show when={lifecycleTitle()?.kind !== "created"} fallback={lifecycleTitle()?.text}>
+                          <TextShimmer text={lifecycleTitle()!.text} />
+                        </Show>
+                      </span>
+                    }
+                  >
+                    <Show when={childTitle() || title.editing}>
+                      <Show
+                        when={title.editing}
+                        fallback={
+                          <h1
+                            data-slot="session-title-child"
+                            classList={{
+                              "truncate text-[13px] font-[530] leading-4 tracking-[-0.04px] text-v2-text-text-base": true,
+                              "w-fit rounded-[6px] px-2 py-1 hover:bg-v2-overlay-simple-overlay-hover":
+                                settings.general.newLayoutDesigns(),
+                              "grow-1 min-w-0": !settings.general.newLayoutDesigns(),
+                            }}
+                            onClick={openTitleEditor}
+                          >
+                            {childTitle()}
+                          </h1>
+                        }
+                      >
+                        <InlineInput
+                          ref={(el) => {
+                            titleRef = el
                           }}
-                          onClick={openTitleEditor}
-                        >
-                          {childTitle()}
-                        </h1>
-                      }
-                    >
-                      <InlineInput
-                        ref={(el) => {
-                          titleRef = el
-                        }}
-                        data-slot="session-title-child"
-                        value={title.draft}
-                        disabled={titleMutation.isPending}
-                        classList={{
-                          "block text-[13px] font-[530] leading-4 tracking-[-0.04px] text-v2-text-text-base": true,
-                          "w-full flex-1 grow-1 min-w-0 pl-1 -ml-1 rounded-[6px]": !settings.general.newLayoutDesigns(),
-                          "field-sizing-content self-start rounded-[6px] px-2 py-1 ":
-                            settings.general.newLayoutDesigns(),
-                        }}
-                        style={{
-                          "--inline-input-shadow": settings.general.newLayoutDesigns()
-                            ? "none"
-                            : "var(--shadow-xs-border-select)",
-                        }}
-                        onInput={(event) => setTitle("draft", event.currentTarget.value)}
-                        onKeyDown={(event) => {
-                          event.stopPropagation()
-                          if (event.key === "Enter") {
-                            event.preventDefault()
-                            void saveTitleEditor()
-                            return
-                          }
-                          if (event.key === "Escape") {
-                            event.preventDefault()
-                            closeTitleEditor()
-                          }
-                        }}
-                        onBlur={closeTitleEditor}
-                      />
+                          data-slot="session-title-child"
+                          value={title.draft}
+                          disabled={titleMutation.isPending}
+                          classList={{
+                            "block text-[13px] font-[530] leading-4 tracking-[-0.04px] text-v2-text-text-base": true,
+                            "w-full flex-1 grow-1 min-w-0 pl-1 -ml-1 rounded-[6px]":
+                              !settings.general.newLayoutDesigns(),
+                            "field-sizing-content self-start rounded-[6px] px-2 py-1 ":
+                              settings.general.newLayoutDesigns(),
+                          }}
+                          style={{
+                            "--inline-input-shadow": settings.general.newLayoutDesigns()
+                              ? "none"
+                              : "var(--shadow-xs-border-select)",
+                          }}
+                          onInput={(event) => setTitle("draft", event.currentTarget.value)}
+                          onKeyDown={(event) => {
+                            event.stopPropagation()
+                            if (event.key === "Enter") {
+                              event.preventDefault()
+                              void saveTitleEditor()
+                              return
+                            }
+                            if (event.key === "Escape") {
+                              event.preventDefault()
+                              closeTitleEditor()
+                            }
+                          }}
+                          onBlur={closeTitleEditor}
+                        />
+                      </Show>
                     </Show>
                   </Show>
                 </div>
@@ -1525,6 +1889,47 @@ export function MessageTimeline(props: {
                       placement="bottom"
                       buttonAppearance={settings.general.newLayoutDesigns() ? "v2" : "default"}
                     />
+                    <Show when={settings.general.newLayoutDesigns() && !parentID() && sync().project}>
+                      {(project) => (
+                        <KobaltePopover
+                          open={summaryOpen()}
+                          placement="bottom-end"
+                          gutter={6}
+                          onOpenChange={setSummary}
+                        >
+                          <KobaltePopover.Trigger
+                            as={IconButtonV2}
+                            icon={<IconV2 name="window-analytics" />}
+                            variant="ghost-muted"
+                            size="large"
+                            state={summaryOpen() ? "pressed" : undefined}
+                            aria-label={language.t("session.summary.title")}
+                            aria-expanded={summaryOpen()}
+                          />
+                          <KobaltePopover.Portal>
+                            <KobaltePopover.Content class="z-50 border-0 bg-transparent p-0 outline-none">
+                              <SessionSummaryPanel
+                                project={project()}
+                                directory={sessionDirectory()}
+                                local={!workspaceSession()}
+                                branch={sync().data.vcs?.branch}
+                                baseBranch={serverSync().child(project().worktree)[0].vcs?.branch}
+                                diffs={sessionDiffs()}
+                                sessionID={id}
+                                moveEligible={props.workspaceMoveEligible}
+                                messageID={props.userMessages.at(-1)?.id}
+                                moveDismissed={workspaceSuggestionDismissed()}
+                                onMoveDismiss={() => setWorkspaceSuggestionDismissed(true)}
+                                onReview={() => {
+                                  setSummary(false)
+                                  command.trigger("review.toggle")
+                                }}
+                              />
+                            </KobaltePopover.Content>
+                          </KobaltePopover.Portal>
+                        </KobaltePopover>
+                      )}
+                    </Show>
                     <Show when={!parentID()}>
                       <Show
                         when={settings.general.newLayoutDesigns()}
@@ -1590,14 +1995,21 @@ export function MessageTimeline(props: {
                                     </DropdownMenu.ItemLabel>
                                   </DropdownMenu.Item>
                                 </Show>
-                                <DropdownMenu.Item onSelect={() => exportSession(id)}>
+                                <DropdownMenu.Item
+                                  disabled={workspaceOperationPending(id)}
+                                  onSelect={() => exportSession(id)}
+                                >
                                   <DropdownMenu.ItemLabel>{language.t("common.export")}</DropdownMenu.ItemLabel>
                                 </DropdownMenu.Item>
-                                <DropdownMenu.Item onSelect={() => void archiveSession(id)}>
+                                <DropdownMenu.Item
+                                  disabled={workspaceOperationPending(id)}
+                                  onSelect={() => void archiveSession(id)}
+                                >
                                   <DropdownMenu.ItemLabel>{language.t("common.archive")}</DropdownMenu.ItemLabel>
                                 </DropdownMenu.Item>
                                 <DropdownMenu.Separator />
                                 <DropdownMenu.Item
+                                  disabled={workspaceOperationPending(id)}
                                   onSelect={() => dialog.show(() => <DialogDeleteSession sessionID={id} />)}
                                 >
                                   <DropdownMenu.ItemLabel>{language.t("common.delete")}</DropdownMenu.ItemLabel>
@@ -1664,14 +2076,20 @@ export function MessageTimeline(props: {
                                   {language.t("session.share.action.share")}...
                                 </MenuV2.Item>
                               </Show>
-                              <MenuV2.Item onSelect={() => exportSession(id)}>
+                              <MenuV2.Item disabled={workspaceOperationPending(id)} onSelect={() => exportSession(id)}>
                                 {language.t("common.export")}...
                               </MenuV2.Item>
-                              <MenuV2.Item onSelect={() => void archiveSession(id)}>
+                              <MenuV2.Item
+                                disabled={workspaceOperationPending(id)}
+                                onSelect={() => void archiveSession(id)}
+                              >
                                 {language.t("common.archive")}
                               </MenuV2.Item>
                               <MenuV2.Separator />
-                              <MenuV2.Item onSelect={() => dialog.show(() => <DialogDeleteSession sessionID={id} />)}>
+                              <MenuV2.Item
+                                disabled={workspaceOperationPending(id)}
+                                onSelect={() => dialog.show(() => <DialogDeleteSession sessionID={id} />)}
+                              >
                                 {language.t("common.delete")}...
                               </MenuV2.Item>
                             </MenuV2.Content>

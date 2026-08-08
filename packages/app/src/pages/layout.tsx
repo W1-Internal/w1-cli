@@ -60,6 +60,7 @@ import { useDirectoryPicker } from "@/components/directory-picker"
 import { ServerConnection, useServer } from "@/context/server"
 import { useLanguage, type Locale } from "@/context/language"
 import { pathKey } from "@/utils/path-key"
+import { WorkspaceOperation } from "@/utils/workspace-operation"
 import {
   displayName,
   effectiveWorkspaceOrder,
@@ -869,6 +870,7 @@ export default function LegacyLayout(props: ParentProps) {
   }
 
   async function archiveSession(session: Session) {
+    if (WorkspaceOperation.get(serverSDK().scope, session.id)?.status === "pending") return
     if ((await serverSDK().protocol) !== "v1") return
     const [store, setStore] = serverSync().child(session.directory)
     const sessions = store.session ?? []
@@ -1117,7 +1119,7 @@ export default function LegacyLayout(props: ParentProps) {
       : import("@/components/dialog-settings")
     void module.then((x) => {
       if (dialogDead || dialogRun !== run) return
-      dialog.show(() => <x.DialogSettings />)
+      dialog.show(() => <x.DialogSettings sessionID={params.id} />)
     })
   }
 

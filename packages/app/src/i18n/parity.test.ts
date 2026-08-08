@@ -200,7 +200,6 @@ describe("i18n plural parity", () => {
     }
   })
 })
-
 async function dictionary(file: string) {
   const module: unknown = await import(file)
   if (typeof module !== "object" || module === null || !("dict" in module) || !isDictionary(module.dict)) {
