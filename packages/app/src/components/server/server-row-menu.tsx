@@ -78,11 +78,10 @@ export const ServerRowMenuView: Component<{
             >
               {props.labels.edit}
             </MenuV2.Item>
-            <Show when={props.canDefault && !props.isDefault}>
-              <MenuV2.Item onSelect={props.onSetDefault}>{props.labels.default}</MenuV2.Item>
-            </Show>
-            <Show when={props.canDefault && props.isDefault}>
-              <MenuV2.Item onSelect={props.onRemoveDefault}>{props.labels.defaultRemove}</MenuV2.Item>
+            <Show when={props.canDefault}>
+              <MenuV2.Item disabled={props.isDefault} onSelect={props.onSetDefault}>
+                {props.labels.default}
+              </MenuV2.Item>
             </Show>
             <MenuV2.Separator />
             <MenuV2.Item disabled={builtin()} onSelect={props.onRemove}>

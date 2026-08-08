@@ -4,12 +4,14 @@ import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { ProviderIcon } from "@opencode-ai/ui/provider-icon"
 import { showToast } from "@/utils/toast"
 import { popularProviders, useProviders } from "@/hooks/use-providers"
-import { createMemo, type Accessor, type Component, For, Show } from "solid-js"
+import { createMemo, createSignal, type Accessor, type Component, For, Show } from "solid-js"
 import { useLanguage } from "@/context/language"
 import { useServerProtocol, useServerSDK } from "@/context/server-sdk"
 import { useServerSync } from "@/context/server-sync"
+import { ServerConnection, useServer } from "@/context/server"
 import { DialogConnectProvider, useProviderConnectController } from "../dialog-connect-provider"
 import { DialogCustomProvider } from "../dialog-custom-provider"
+import { InlineServerSelect } from "./parts/server-select"
 import { SettingsListV2 } from "./parts/list"
 import "./settings-v2.css"
 
@@ -40,6 +42,9 @@ export const SettingsProvidersV2: Component<{
   const serverSync = useServerSync()
   const providers = useProviders(props.directory)
   const providerConnect = useProviderConnectController({ onBack: props.onBack })
+
+  const server = useServer()
+  const [selectedServer, setSelectedServer] = createSignal<ServerConnection.Key | "all">(server.key)
 
   const connect = (provider?: string) => {
     providerConnect.select(provider)
@@ -145,7 +150,14 @@ export const SettingsProvidersV2: Component<{
   return (
     <>
       <div class="settings-v2-tab-header">
-        <h2 class="settings-v2-tab-title">{language.t("settings.providers.title")}</h2>
+        <div class="settings-v2-tab-header-row">
+          <h2 class="settings-v2-tab-title">{language.t("settings.providers.title")}</h2>
+          <InlineServerSelect
+            value={selectedServer()}
+            onChange={setSelectedServer}
+            includeAll
+          />
+        </div>
       </div>
 
       <div class="settings-v2-tab-body settings-v2-providers">

@@ -9,7 +9,7 @@ import { createStore } from "solid-js/store"
 import { ServerRowMenu } from "@/components/server/server-row-menu"
 import { ServerHealthIndicator } from "@/components/server/server-row"
 import { useLanguage } from "@/context/language"
-import { ServerConnection, serverName } from "@/context/server"
+import { ServerConnection, serverName, useServer } from "@/context/server"
 import { useServerManagementController } from "../dialog-select-server"
 import { DialogServerV2 } from "./dialog-server-v2"
 import { SettingsListV2 } from "./parts/list"
@@ -19,6 +19,7 @@ import "./settings-v2.css"
 export const SettingsServersV2: Component = () => {
   const dialog = useDialog()
   const language = useLanguage()
+  const server = useServer()
   const controller = useServerManagementController()
   const [store, setStore] = createStore({ filter: "" })
   const wslServers = useFilteredWslServers(() => store.filter)
@@ -27,15 +28,38 @@ export const SettingsServersV2: Component = () => {
     () => controller.sortedItems().filter((item) => !isWslServer(item)).length + wslServers().length > 1,
   )
 
+  const isLocal = (item: ServerConnection.Any) => ServerConnection.local(item)
+
+  const isDefaultServer = (key: ServerConnection.Key, item: ServerConnection.Any) => {
+    const def = controller.defaultKey()
+    if (!def) return isLocal(item)
+    return def === key
+  }
+
   const filtered = createMemo(() => {
     const items = controller.sortedItems().filter((item) => !isWslServer(item))
     const query = store.filter.trim()
-    if (!query) return items
+    if (!query) {
+      return items.slice().sort((a, b) => {
+        const aLocal = isLocal(a)
+        const bLocal = isLocal(b)
+        if (aLocal && !bLocal) return -1
+        if (!aLocal && bLocal) return 1
+        return 0
+      })
+    }
     return fuzzysort
       .go(query, items, {
         keys: [(item) => serverName(item), (item) => item.http.url],
       })
       .map((result) => result.obj)
+      .sort((a, b) => {
+        const aLocal = isLocal(a)
+        const bLocal = isLocal(b)
+        if (aLocal && !bLocal) return -1
+        if (!aLocal && bLocal) return 1
+        return 0
+      })
   })
 
   const openAdd = () => {
@@ -97,12 +121,11 @@ export const SettingsServersV2: Component = () => {
           }
         >
           <SettingsListV2>
-            <WslServerSettings controller={controller} servers={wslServers} />
             <For each={filtered()}>
               {(item) => {
                 const key = ServerConnection.key(item)
                 const health = () => controller.status()[key]
-                const isDefault = () => controller.defaultKey() === key
+                const isDefault = () => isDefaultServer(key, item)
                 return (
                   <div class="settings-v2-servers-row">
                     <div class="settings-v2-servers-lead">
@@ -131,6 +154,7 @@ export const SettingsServersV2: Component = () => {
                 )
               }}
             </For>
+            <WslServerSettings controller={controller} servers={wslServers} />
           </SettingsListV2>
         </Show>
       </div>

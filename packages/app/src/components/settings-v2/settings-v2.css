@@ -39,6 +39,14 @@
   background: linear-gradient(to bottom, var(--v2-background-bg-base) calc(100% - 24px), transparent);
 }
 
+.settings-v2-tab-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+}
+
 .settings-v2-tab-title {
   font-size: 15px;
   font-weight: 640;
@@ -943,4 +951,41 @@
   font-weight: 440;
   line-height: 1;
   color: var(--v2-state-fg-danger);
+}
+
+.settings-v2-extensions-tabs {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  width: 280px;
+  height: 32px;
+  overflow: visible;
+}
+
+.settings-v2-extensions-tabs > button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  height: 24px;
+  padding: 0 8px;
+  border: 0.5px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--v2-text-text-muted);
+  font-size: 13px;
+  font-weight: 440;
+  line-height: 1;
+  letter-spacing: -0.04px;
+}
+
+.settings-v2-extensions-tabs > button[data-selected] {
+  border-color: var(--v2-border-border-muted);
+  background: var(--v2-background-bg-layer-03);
+  color: var(--v2-text-text-base);
+}
+
+.settings-v2-extensions-tabs > button:focus-visible {
+  outline: 2px solid var(--v2-border-border-focus);
+  outline-offset: 2px;
 }
