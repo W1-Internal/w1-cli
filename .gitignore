@@ -18,6 +18,7 @@ ts-dist
 **/.omo
 .omo/
 /result
+/artifacts/
 refs
 Session.vim
 /opencode.json

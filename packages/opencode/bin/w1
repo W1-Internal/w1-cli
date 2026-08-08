@@ -1,0 +1,23 @@
+#!/usr/bin/env node
+
+const childProcess = require("child_process")
+const fs = require("fs")
+const path = require("path")
+
+const configured = process.env.W1_BIN_PATH
+const local = path.join(__dirname, ".w1")
+const binary = configured || (fs.existsSync(local) ? local : undefined)
+
+if (!binary) {
+  console.error("W1 CLI binary is missing. Reinstall W1 or set W1_BIN_PATH.")
+  process.exit(1)
+}
+
+const child = childProcess.spawn(binary, process.argv.slice(2), { stdio: "inherit" })
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+  process.on(signal, () => child.kill(signal))
+}
+child.on("exit", (code, signal) => {
+  if (signal) process.kill(process.pid, signal)
+  process.exit(typeof code === "number" ? code : 1)
+})

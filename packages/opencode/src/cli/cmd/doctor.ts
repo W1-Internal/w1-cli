@@ -1,0 +1,121 @@
+import { cmd } from "./cmd"
+import { W1Runtime, type RuntimeClient } from "@/w1/runtime"
+import path from "path"
+import os from "os"
+import { stat } from "fs/promises"
+
+type Check = {
+  name: string
+  status: "ok" | "warn" | "fail"
+  detail: string
+}
+
+export const DoctorCommand = cmd<{}, { project?: string; json?: boolean }>({
+  command: "doctor [project]",
+  describe: "diagnose W1 without starting an agent turn",
+  builder: (yargs) =>
+    yargs
+      .positional("project", { type: "string", describe: "project directory" })
+      .option("json", { type: "boolean", default: false, describe: "print machine-readable output" }),
+  handler: async (args) => {
+    const directory = path.resolve(args.project ?? process.cwd())
+    const checks = await diagnostics(directory)
+    if (args.json) {
+      process.stdout.write(JSON.stringify({ product: "w1", directory, checks }, null, 2) + "\n")
+    } else {
+      process.stdout.write(`W1 doctor · ${directory}\n\n`)
+      for (const check of checks) {
+        const mark = check.status === "ok" ? "✓" : check.status === "warn" ? "!" : "✗"
+        process.stdout.write(` ${mark} ${check.name.padEnd(12)} ${check.detail}\n`)
+      }
+      process.stdout.write(
+        "\nEditor reconnect errors are separate from these OS/runtime checks. A backend or auth failure still affects every surface.\n",
+      )
+    }
+    if (checks.some((check) => check.status === "fail")) process.exitCode = 2
+  },
+})
+
+async function diagnostics(directory: string) {
+  const checks: Check[] = []
+  checks.push({ name: "build", status: "ok", detail: W1Runtime.buildID })
+  checks.push(
+    (await stat(directory)
+      .then((value) => value.isDirectory())
+      .catch(() => false))
+      ? { name: "filesystem", status: "ok", detail: "project path exists" }
+      : { name: "filesystem", status: "fail", detail: "project path does not exist" },
+  )
+
+  const git = Bun.spawnSync({
+    cmd: ["git", "-C", directory, "rev-parse", "--is-inside-work-tree"],
+    stdout: "pipe",
+    stderr: "pipe",
+  })
+  checks.push(
+    git.exitCode === 0
+      ? { name: "git", status: "ok", detail: "repository discovered" }
+      : { name: "git", status: "warn", detail: "folder is not a Git repository" },
+  )
+
+  const authPath = path.join(os.homedir(), ".w1", "auth.json")
+  const auth = Bun.file(authPath)
+  checks.push(
+    (await auth.exists())
+      ? { name: "session", status: "ok", detail: "shared GUI session is present (contents not read)" }
+      : {
+          name: "session",
+          status: "fail",
+          detail: "not signed in; open W1 desktop or VS Code and sign in",
+        },
+  )
+
+  const runtime = await W1Runtime.resolveRuntime()
+  checks.push(
+    runtime
+      ? { name: "runtime", status: "ok", detail: `${runtime.source}: ${runtime.path}` }
+      : { name: "runtime", status: "fail", detail: "run-stream.mjs was not found" },
+  )
+
+  if (runtime) {
+    let client: RuntimeClient | undefined
+    try {
+      client = await W1Runtime.startRuntime({ cwd: directory, onFrame() {}, onStderr() {} })
+      checks.push({ name: "handshake", status: "ok", detail: "runtime emitted READY" })
+    } catch (error) {
+      checks.push({
+        name: "handshake",
+        status: "fail",
+        detail: error instanceof Error ? error.message : String(error),
+      })
+    } finally {
+      await client?.stop()
+    }
+  }
+
+  try {
+    const response = await fetch("https://app.w1lab.com", {
+      method: "HEAD",
+      redirect: "manual",
+      signal: AbortSignal.timeout(10_000),
+    })
+    checks.push({
+      name: "backend",
+      status: response.status < 500 ? "ok" : "warn",
+      detail: `app.w1lab.com responded HTTP ${response.status}`,
+    })
+  } catch (error) {
+    checks.push({
+      name: "backend",
+      status: "fail",
+      detail: error instanceof Error ? error.message : String(error),
+    })
+  }
+
+  checks.push({
+    name: "terminal",
+    status: process.stdin.isTTY && process.stdout.isTTY ? "ok" : "warn",
+    detail: process.stdin.isTTY && process.stdout.isTTY ? "interactive TTY available" : "non-interactive input/output",
+  })
+  return checks
+}

@@ -3,7 +3,6 @@
 import { $ } from "bun"
 import path from "path"
 import { fileURLToPath } from "url"
-import { createSolidTransformPlugin } from "@opentui/solid/bun-plugin"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -16,12 +15,24 @@ const generated = await import("./generate.ts")
 import { Script } from "@opencode-ai/script"
 import pkg from "../package.json"
 
+const productName = "w1-cli"
+
 const singleFlag = process.argv.includes("--single")
 const baselineFlag = process.argv.includes("--baseline")
 const skipInstall = process.argv.includes("--skip-install")
 const sourcemapsFlag = process.argv.includes("--sourcemaps")
-const plugin = createSolidTransformPlugin()
 const skipEmbedWebUi = process.argv.includes("--skip-embed-web-ui")
+const keepDist = process.argv.includes("--keep-dist")
+const requestedTarget = process.argv.find((value) => value.startsWith("--target="))?.slice("--target=".length)
+const w1RuntimeRoot = path.resolve(
+  process.env.W1_RUNTIME_BUNDLE_DIR ?? path.join(dir, "../../../harness/vscode-extension/out/harness"),
+)
+const w1RuntimeEntrypoint = path.join(w1RuntimeRoot, "run-stream.mjs")
+const w1BuildID = (await $`git rev-parse HEAD`.text()).trim()
+const w1BuildDirty = (await $`git status --porcelain`.text()).trim().length > 0
+if (!(await Bun.file(w1RuntimeEntrypoint).exists())) {
+  throw new Error(`W1 runtime bundle is missing: ${w1RuntimeEntrypoint}`)
+}
 
 const createEmbeddedWebUIBundle = async () => {
   console.log(`Building Web UI to embed in the binary`)
@@ -48,7 +59,6 @@ const createEmbeddedWebUIBundle = async () => {
 }
 
 const embeddedFileMap = skipEmbedWebUi ? null : await createEmbeddedWebUIBundle()
-const treeSitterWorker = await Bun.file(fileURLToPath(import.meta.resolve("@opentui/core/parser.worker"))).text()
 
 const allTargets: {
   os: string
@@ -113,28 +123,37 @@ const allTargets: {
   },
 ]
 
-const targets = singleFlag
-  ? allTargets.filter((item) => {
-      if (item.os !== process.platform || item.arch !== process.arch) {
-        return false
-      }
+const targets = requestedTarget
+  ? allTargets.filter(
+      (item) =>
+        [item.os === "win32" ? "windows" : item.os, item.arch, item.avx2 === false ? "baseline" : undefined]
+          .filter(Boolean)
+          .join("-") === requestedTarget,
+    )
+  : singleFlag
+    ? allTargets.filter((item) => {
+        if (item.os !== process.platform || item.arch !== process.arch) {
+          return false
+        }
 
-      // When building for the current platform, prefer a single native binary by default.
-      // Baseline binaries require additional Bun artifacts and can be flaky to download.
-      if (item.avx2 === false) {
-        return baselineFlag
-      }
+        // When building for the current platform, prefer a single native binary by default.
+        // Baseline binaries require additional Bun artifacts and can be flaky to download.
+        if (item.avx2 === false) {
+          return baselineFlag
+        }
 
-      // also skip abi-specific builds for the same reason
-      if (item.abi !== undefined) {
-        return false
-      }
+        // also skip abi-specific builds for the same reason
+        if (item.abi !== undefined) {
+          return false
+        }
 
-      return true
-    })
-  : allTargets
+        return true
+      })
+    : allTargets
 
-await $`rm -rf dist`
+if (targets.length === 0) throw new Error(`Unknown build target: ${requestedTarget}`)
+
+if (!keepDist) await $`rm -rf dist`
 
 const binaries: Record<string, string> = {}
 if (!skipInstall) {
@@ -144,7 +163,7 @@ if (!skipInstall) {
 }
 for (const item of targets) {
   const name = [
-    pkg.name,
+    productName,
     // changing to win32 flags npm for some reason
     item.os === "win32" ? "windows" : item.os,
     item.arch,
@@ -157,13 +176,11 @@ for (const item of targets) {
   await $`mkdir -p dist/${name}/bin`
 
   const workerPath = "./src/cli/tui/worker.ts"
-  const treeSitterWorkerPath = "opentui-tree-sitter-worker.js"
   const bunfsRoot = item.os === "win32" ? "B:/~BUN/root/" : "/$bunfs/root/"
 
   await Bun.build({
     conditions: ["bun", "node"],
     tsconfig: "./tsconfig.json",
-    plugins: [plugin],
     external: ["node-gyp"],
     format: "esm",
     minify: true,
@@ -174,36 +191,39 @@ for (const item of targets) {
       autoloadDotenv: false,
       autoloadTsconfig: true,
       autoloadPackageJson: true,
-      target: name.replace(pkg.name, "bun") as any,
-      outfile: `dist/${name}/bin/opencode`,
-      execArgv: [`--user-agent=opencode/${Script.version}`, "--use-system-ca", "--"],
+      target: name.replace(productName, "bun") as any,
+      outfile: `dist/${name}/bin/w1`,
+      execArgv: [`--user-agent=w1/${Script.version}`, "--use-system-ca", "--"],
       windows: {},
     },
-    files: {
-      [treeSitterWorkerPath]: treeSitterWorker,
-      ...(embeddedFileMap ? { "opencode-web-ui.gen.ts": embeddedFileMap } : {}),
-    },
-    entrypoints: [
-      "./src/index.ts",
-      workerPath,
-      treeSitterWorkerPath,
-      ...(embeddedFileMap ? ["opencode-web-ui.gen.ts"] : []),
-    ],
+    files: embeddedFileMap ? { "opencode-web-ui.gen.ts": embeddedFileMap } : {},
+    entrypoints: ["./src/index.ts", ...(embeddedFileMap ? ["opencode-web-ui.gen.ts"] : [])],
     define: {
       FFF_LIBC: JSON.stringify(item.abi === "musl" ? "musl" : "gnu"),
       OPENCODE_VERSION: `'${Script.version}'`,
       OPENCODE_MODELS_DEV: generated.modelsData,
-      OTUI_TREE_SITTER_WORKER_PATH: bunfsRoot + treeSitterWorkerPath,
+      OTUI_TREE_SITTER_WORKER_PATH: bunfsRoot + "opentui-tree-sitter-worker.js",
       OPENCODE_WORKER_PATH: workerPath,
       OPENCODE_CHANNEL: `'${Script.channel}'`,
       OPENCODE_LIBC: item.os === "linux" ? `'${item.abi ?? "glibc"}'` : "",
+      W1_CLI_COMPILED: "true",
+      W1_CLI_BUILD_ID: JSON.stringify(w1BuildID + (w1BuildDirty ? "-dirty" : "")),
       ...(item.os === "linux" ? { "process.env.OPENTUI_LIBC": JSON.stringify(item.abi ?? "glibc") } : {}),
     },
   })
 
+  await $`mkdir -p dist/${name}/bin/w1-runtime`
+  await $`cp ${w1RuntimeEntrypoint} dist/${name}/bin/w1-runtime/run-stream.mjs`
+  if (await Bun.file(path.join(w1RuntimeRoot, "BUILD_ID")).exists()) {
+    await $`cp ${path.join(w1RuntimeRoot, "BUILD_ID")} dist/${name}/bin/w1-runtime/BUILD_ID`
+  }
+  if (await Bun.file(path.join(w1RuntimeRoot, "standard_fonts", "LICENSE_FOXIT")).exists()) {
+    await $`cp -R ${path.join(w1RuntimeRoot, "standard_fonts")} dist/${name}/bin/w1-runtime/standard_fonts`
+  }
+
   // Smoke test: only run if binary is for current platform
   if (item.os === process.platform && item.arch === process.arch && !item.abi) {
-    const binaryPath = `dist/${name}/bin/opencode`
+    const binaryPath = `dist/${name}/bin/w1`
     console.log(`Running smoke test: ${binaryPath} --version`)
     try {
       const versionOutput = await $`${binaryPath} --version`.text()
