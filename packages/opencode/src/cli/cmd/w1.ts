@@ -24,6 +24,7 @@ type TurnState = {
   result?: Record<string, unknown>
   stream?: "say" | "think"
   sawSay: boolean
+  activity: ActivityIndicator
 }
 
 type Args = {
@@ -34,6 +35,7 @@ type Args = {
   image?: string[]
   verbose?: boolean
   fullAccess?: boolean
+  yolo?: boolean
 }
 
 export const W1Command = cmd<{}, Args>({
@@ -51,6 +53,11 @@ export const W1Command = cmd<{}, Args>({
         type: "boolean",
         default: false,
         describe: "allow tools without approval prompts",
+      })
+      .option("yolo", {
+        type: "boolean",
+        default: false,
+        describe: "allow every tool without approval prompts (alias for --full-access)",
       }),
   handler: async (args) => {
     const directory = path.resolve(args.project ?? process.cwd())
@@ -82,6 +89,7 @@ export const W1Command = cmd<{}, Args>({
       write(`Signed in${session.email ? ` as ${session.email}` : ""}.\n`)
     }
 
+    const fullAccess = Boolean(args.fullAccess || args.yolo)
     const readline = createInterface({ input: process.stdin, output: process.stdout })
     const state = {
       directory,
@@ -94,12 +102,20 @@ export const W1Command = cmd<{}, Args>({
 
     const onFrame = async (frame: ProtocolFrame) => {
       if (frame.tag === "EVT") renderEvent(frame.payload, state.turn, Boolean(args.verbose))
-      if (frame.tag === "APPROVAL") await answerApproval(readline, state.client, frame.payload)
+      if (frame.tag === "APPROVAL") {
+        state.turn?.activity.clear()
+        if (fullAccess) acceptApproval(state.client, frame.payload)
+        else await answerApproval(readline, state.client, frame.payload)
+        state.turn?.activity.set("Working")
+      }
       if (frame.tag === "QUESTION" || frame.tag === "USER_INPUT") {
+        state.turn?.activity.clear()
         await answerQuestion(readline, state.client, frame.payload)
+        state.turn?.activity.set("Thinking")
       }
       if (frame.tag === "RESULT" && state.turn) state.turn.result = frame.payload
       if (frame.tag === "IDLE" && state.turn) {
+        state.turn.activity.clear()
         breakStream(state.turn)
         state.turn.done.resolve(state.turn.result ?? { status: "internal_error", error: "missing result" })
       }
@@ -120,10 +136,12 @@ export const W1Command = cmd<{}, Args>({
         },
       })
       state.client.exited.then((code) => {
+        state.turn?.activity.clear()
         state.turn?.done.reject(new Error(`W1 runtime exited unexpectedly (exit ${code}).`))
       })
       const interrupt = () => {
         if (state.turn) {
+          state.turn.activity.clear()
           state.client?.interrupt()
           write(`\n${color.dim}stopping W1…${color.reset}\n`)
           return
@@ -131,7 +149,7 @@ export const W1Command = cmd<{}, Args>({
         readline.close()
       }
       process.on("SIGINT", interrupt)
-      header(directory, state.client.location.source, state.threadID)
+      header(directory, state.client.location.source, state.threadID, fullAccess)
 
       try {
         if (initialPrompt) {
@@ -194,14 +212,19 @@ async function runTurn(
   args: Args,
 ) {
   if (!state.client) throw new Error("W1 runtime is not connected.")
-  state.turn = { done: Promise.withResolvers<Record<string, unknown>>(), sawSay: false }
+  state.turn = {
+    done: Promise.withResolvers<Record<string, unknown>>(),
+    sawSay: false,
+    activity: new ActivityIndicator(),
+  }
+  state.turn.activity.set("Thinking")
   state.client.send({
     repo: state.directory,
     task,
     threadId: state.threadID,
     turnRef: randomUUID(),
     provider: "w1",
-    runtimeMode: args.fullAccess ? "full-access" : "approval-required",
+    runtimeMode: args.fullAccess || args.yolo ? "full-access" : "approval-required",
     first: state.first,
     ...(args.model ? { model: args.model } : {}),
     ...(state.pendingImages.length ? { images: state.pendingImages } : {}),
@@ -209,6 +232,7 @@ async function runTurn(
   state.first = false
   state.pendingImages = []
   const result = await state.turn.done.promise
+  state.turn.activity.clear()
   if (!state.turn.sawSay && typeof result.summary === "string" && result.summary.trim()) {
     write(`${color.bold}${result.summary.trim()}${color.reset}\n`)
   }
@@ -225,7 +249,11 @@ function renderEvent(event: Record<string, unknown>, turn: TurnState | undefined
   if (!turn) return
   const type = String(event.t ?? "")
   if (type === "say_delta" || type === "think_delta") {
-    if (type === "think_delta" && !verbose) return
+    if (type === "think_delta" && !verbose) {
+      turn.activity.set("Thinking")
+      return
+    }
+    turn.activity.clear()
     const stream = type === "say_delta" ? "say" : "think"
     if (turn.stream && turn.stream !== stream) write("\n")
     if (turn.stream !== stream && stream === "think") write(`${color.dim}thinking: `)
@@ -236,21 +264,28 @@ function renderEvent(event: Record<string, unknown>, turn: TurnState | undefined
   }
   breakStream(turn)
   if (type === "action") {
+    turn.activity.clear()
     const input = event.input && typeof event.input === "object" ? event.input : {}
     const preview = JSON.stringify(input)
     write(
       `${color.lime}●${color.reset} ${color.bold}${String(event.tool ?? "tool")}${color.reset} ${color.dim}${preview.slice(0, 180)}${preview.length > 180 ? "…" : ""}${color.reset}\n`,
     )
+    turn.activity.set("Working")
     return
   }
-  if (type === "observation" && (verbose || event.ok === false)) {
-    const line = String(event.observation ?? "").split("\n")[0]
-    write(
-      `${event.ok === false ? color.red : color.dim}${event.ok === false ? "  error" : "  done"}: ${line.slice(0, 180)}${color.reset}\n`,
-    )
+  if (type === "observation") {
+    turn.activity.clear()
+    if (verbose || event.ok === false) {
+      const line = String(event.observation ?? "").split("\n")[0]
+      write(
+        `${event.ok === false ? color.red : color.dim}${event.ok === false ? "  error" : "  done"}: ${line.slice(0, 180)}${color.reset}\n`,
+      )
+    }
+    turn.activity.set("Thinking")
     return
   }
   if (type === "error") {
+    turn.activity.clear()
     write(`${color.red}error: ${String(event.message ?? "runtime error")}${color.reset}\n`)
     return
   }
@@ -272,6 +307,14 @@ async function answerApproval(
     type: "approval-response",
     requestId: requestID,
     decision: answer === "y" || answer === "yes" ? "accept" : "deny",
+  })
+}
+
+function acceptApproval(client: RuntimeClient | undefined, payload: Record<string, unknown>) {
+  client?.send({
+    type: "approval-response",
+    requestId: String(payload.requestId ?? ""),
+    decision: "accept",
   })
 }
 
@@ -322,11 +365,48 @@ function breakStream(turn: TurnState) {
   turn.stream = undefined
 }
 
-function header(directory: string, runtime: string, threadID: string) {
+function header(directory: string, runtime: string, threadID: string, fullAccess: boolean) {
   write(
-    `\n${color.lime}${color.bold}W1${color.reset} ${color.dim}· ${path.basename(directory)} · ${runtime} runtime · ${threadID}${color.reset}\n`,
+    `\n${color.lime}${color.bold}W1${color.reset} ${color.dim}· ${path.basename(directory)} · ${runtime} runtime · ${threadID}${color.reset}${fullAccess ? ` ${color.yellow}· YOLO${color.reset}` : ""}\n`,
   )
   write(`${color.dim}One W1 actor, directly in your terminal. /help for commands.${color.reset}\n\n`)
+}
+
+class ActivityIndicator {
+  private label?: "Thinking" | "Working"
+  private frame = 0
+  private timer?: ReturnType<typeof setInterval>
+  private readonly animated = Boolean(process.stdout.isTTY)
+  private readonly frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+  set(label: "Thinking" | "Working") {
+    if (this.label === label) return
+    this.clear()
+    this.label = label
+    if (!this.animated) {
+      write(`${label}…\n`)
+      return
+    }
+    this.render()
+    this.timer = setInterval(() => {
+      this.frame = (this.frame + 1) % this.frames.length
+      this.render()
+    }, 80)
+    this.timer.unref?.()
+  }
+
+  clear() {
+    if (this.timer) clearInterval(this.timer)
+    this.timer = undefined
+    if (this.label && this.animated) write("\r\x1b[2K")
+    this.label = undefined
+    this.frame = 0
+  }
+
+  private render() {
+    if (!this.label) return
+    write(`\r\x1b[2K${color.lime}${this.frames[this.frame]}${color.reset} ${color.dim}${this.label}…${color.reset}`)
+  }
 }
 
 function help() {

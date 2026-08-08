@@ -15,6 +15,7 @@ w1 [project]                 start an interactive W1 session
 w1 --prompt "inspect this"   run one turn and exit
 w1 --image screenshot.png   attach an image to the first turn
 w1 --session THREAD_ID      resume a durable W1 thread
+w1 --yolo                   allow all tools without permission prompts
 w1 login                    sign in or create an account in the external browser
 w1 auth status              show the shared W1 session status
 w1 logout                   revoke and remove the shared W1 session
@@ -31,7 +32,12 @@ Interactive commands:
 ```
 
 By default W1 keeps its normal approval boundary. `--full-access` is explicit and affects only the
-current invocation.
+current invocation. `--yolo` is the memorable alias for the same full-access runtime and also
+auto-accepts any defensive approval request that reaches the terminal surface.
+
+Every turn displays an activity state immediately. `Thinking…` means W1 is waiting on the model;
+`Working…` means a tool is running. The state clears before narration, answers, approval prompts,
+and user questions. Reasoning text remains hidden unless `--verbose` is explicitly selected.
 
 ## Architecture
 
@@ -72,7 +78,7 @@ Build one native artifact:
 
 ```bash
 cd packages/opencode
-W1_CLI_VERSION=0.1.1 bun run build --single --skip-install --skip-embed-web-ui
+W1_CLI_VERSION=0.1.2 bun run build --single --skip-install --skip-embed-web-ui
 ```
 
 Set `W1_RUNTIME_BUNDLE_DIR` when the harness bundle is not in the default sibling location.
