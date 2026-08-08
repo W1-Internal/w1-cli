@@ -21,6 +21,12 @@ export function useProviders(directory: Accessor<string | undefined>) {
   const serverSync = useServerSync()
   const params = useParams()
   const dir = () => (directory ? directory() : decode64(params.dir))
+  createEffect(() => {
+    const value = dir()
+    if (value) {
+      serverSync().enableProviders(value)
+    }
+  })
   const providers = () => {
     const value = dir()
     const projectStore = value ? serverSync().child(value)[0] : undefined

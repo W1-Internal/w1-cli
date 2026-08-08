@@ -4,7 +4,6 @@ import { I18nProvider } from "@opencode-ai/ui/context"
 import type { UiI18n } from "@opencode-ai/ui/context/i18n"
 import { DialogProvider } from "@opencode-ai/ui/context/dialog"
 import { FileComponentProvider } from "@opencode-ai/ui/context/file"
-import { File } from "@opencode-ai/session-ui/file"
 import { Font } from "@opencode-ai/ui/font"
 import { Splash } from "@opencode-ai/ui/logo"
 import { ThemeProvider } from "@opencode-ai/ui/theme/context"
@@ -59,18 +58,24 @@ import { TabsProvider, useTabs, type DraftTab } from "@/context/tabs"
 import { SDKProvider, useSDK } from "@/context/sdk"
 import { WslServersProvider } from "@/wsl/context"
 import DirectoryLayout, { DirectoryDataProvider } from "@/pages/directory-layout"
-import LegacyLayout from "@/pages/layout"
-import NewLayout from "@/pages/layout-new"
 import { ErrorPage } from "./pages/error"
 import { useCheckServerHealth } from "./utils/server-health"
 import { legacySessionHref, legacySessionServer, requireServerKey, sessionHref } from "./utils/session-route"
 import { createSessionLineage } from "@/pages/session/session-lineage"
 
-import { SessionPage, SessionRouteErrorBoundary, TargetSessionRouteContent } from "@/pages/session"
-import { NewHome } from "@/pages/home"
-import { LegacyHome } from "@/pages/home/legacy-home"
-
 const NewSession = lazy(() => import("@/pages/new-session"))
+const NewLayout = lazy(() => import("@/pages/layout-new"))
+const NewHome = lazy(() => import("@/pages/home").then((module) => ({ default: module.NewHome })))
+const LegacyLayout = lazy(() => import("@/pages/layout"))
+const LegacyHome = lazy(() => import("@/pages/home/legacy-home").then((module) => ({ default: module.LegacyHome })))
+const File = lazy(() => import("@opencode-ai/session-ui/file").then((module) => ({ default: module.File })))
+const SessionPage = lazy(() => import("@/pages/session").then((module) => ({ default: module.SessionPage })))
+const SessionRouteErrorBoundary = lazy(() =>
+  import("@/pages/session").then((module) => ({ default: module.SessionRouteErrorBoundary })),
+)
+const TargetSessionRouteContent = lazy(() =>
+  import("@/pages/session").then((module) => ({ default: module.TargetSessionRouteContent })),
+)
 
 const SessionRoute = () => {
   const settings = useSettings()

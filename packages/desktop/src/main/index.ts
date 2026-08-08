@@ -142,8 +142,11 @@ const main = Effect.gen(function* () {
   app.setAppUserModelId(appId)
   app.setPath(
     "userData",
-    onboardingTestRoot ? join(onboardingTestRoot, "desktop") : join(app.getPath("appData"), appId),
+    process.env.OPENCODE_PROFILE_USER_DATA ??
+      (onboardingTestRoot ? join(onboardingTestRoot, "desktop") : join(app.getPath("appData"), appId)),
   )
+  if (process.env.OPENCODE_PROFILE_USER_DATA)
+    app.setPath("sessionData", join(process.env.OPENCODE_PROFILE_USER_DATA, "session"))
   if (onboardingTestRoot) app.setPath("sessionData", join(onboardingTestRoot, "session"))
   initializeOldLayoutEligibility(app.getPath("userData"))
   logger = initLogging()
@@ -191,9 +194,16 @@ const main = Effect.gen(function* () {
   ensureLoopbackNoProxy()
   useEnvProxy()
   app.commandLine.appendSwitch("proxy-bypass-list", "<-loopback>")
-  const features = app.commandLine.getSwitchValue("enable-features")
-  app.commandLine.appendSwitch("enable-features", features ? `${jsCallStackFeature},${features}` : jsCallStackFeature)
-  if (!app.isPackaged) app.commandLine.appendSwitch("remote-debugging-port", "9222")
+  const features = [
+    jsCallStackFeature,
+    process.env.OPENCODE_PROFILE_LOAF === "1" ? "AlwaysLogLOAFURL" : "",
+    app.commandLine.getSwitchValue("enable-features"),
+  ]
+    .filter(Boolean)
+    .join(",")
+  app.commandLine.appendSwitch("enable-features", features)
+  if (!app.isPackaged)
+    app.commandLine.appendSwitch("remote-debugging-port", process.env.OPENCODE_PROFILE_CDP_PORT ?? "9222")
 
   if (!app.requestSingleInstanceLock()) {
     app.quit()

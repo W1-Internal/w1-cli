@@ -8,7 +8,7 @@ import type {
 } from "@opencode-ai/sdk/v2/client"
 import { showToast } from "@/utils/toast"
 import { getFilename } from "@opencode-ai/core/util/path"
-import { type Accessor, batch, createMemo, getOwner, onCleanup, onMount, untrack } from "solid-js"
+import { type Accessor, batch, createMemo, createSignal, getOwner, onCleanup, onMount, untrack } from "solid-js"
 import { createStore, produce, reconcile } from "solid-js/store"
 import { useLanguage } from "@/context/language"
 import type { InitError } from "../pages/error"
@@ -85,6 +85,7 @@ import type {
 } from "@opencode-ai/client/promise"
 import { toggleMcp } from "./global-sync/mcp"
 import { createServerSession, type ServerSession } from "./server-session"
+import { decodeSessionMessages } from "./session-message-decoder"
 
 type GlobalStore = {
   ready: boolean
@@ -252,6 +253,7 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
 
   const session = createServerSession(serverSDK.client, serverSDK.api.session, serverSDK.api.message, {
     protocol: serverSDK.protocol,
+    decodeMessages: decodeSessionMessages,
   })
   const queryOptionsApi = makeQueryOptionsApi(
     serverSDK.scope,
@@ -261,31 +263,40 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
     serverSDK.protocol,
   )
 
+  const [providersEnabled, setProvidersEnabled] = createSignal(false)
+  const [backgroundEnabled, setBackgroundEnabled] = createSignal(false)
   const [configQuery, providerQuery, pathQuery] = useQueries(() => ({
-    queries: [queryOptionsApi.globalConfig(), queryOptionsApi.providers(null), queryOptionsApi.path(null)],
+    queries: [
+      { ...queryOptionsApi.globalConfig(), enabled: backgroundEnabled() },
+      { ...queryOptionsApi.providers(null), enabled: providersEnabled() },
+      { ...queryOptionsApi.path(null), enabled: backgroundEnabled() },
+    ],
   }))
   const activeSessionsQuery = useQuery(() =>
-    loadActiveSessionsQuery(serverSDK.scope, {
-      active: async () => {
-        if ((await serverSDK.protocol) === "v1") {
-          const statuses = (await serverSDK.client.session.status()).data ?? {}
-          seedActiveSessionStatuses(session, statuses)
-          for (const sessionID of Object.keys(statuses)) {
+    ({
+      ...loadActiveSessionsQuery(serverSDK.scope, {
+        active: async () => {
+          if ((await serverSDK.protocol) === "v1") {
+            const statuses = (await serverSDK.client.session.status()).data ?? {}
+            seedActiveSessionStatuses(session, statuses)
+            for (const sessionID of Object.keys(statuses)) {
+              void session.resolve(sessionID).catch(() => undefined)
+            }
+            return Object.fromEntries(
+              Object.entries(statuses).flatMap(([sessionID, status]) =>
+                status.type === "idle" ? [] : [[sessionID, { type: "running" as const }]],
+              ),
+            )
+          }
+          const active = await serverSDK.api.session.active()
+          seedActiveSessionStatuses(session, active)
+          for (const sessionID of Object.keys(active)) {
             void session.resolve(sessionID).catch(() => undefined)
           }
-          return Object.fromEntries(
-            Object.entries(statuses).flatMap(([sessionID, status]) =>
-              status.type === "idle" ? [] : [[sessionID, { type: "running" as const }]],
-            ),
-          )
-        }
-        const active = await serverSDK.api.session.active()
-        seedActiveSessionStatuses(session, active)
-        for (const sessionID of Object.keys(active)) {
-          void session.resolve(sessionID).catch(() => undefined)
-        }
-        return active
-      },
+          return active
+        },
+      }),
+      enabled: backgroundEnabled(),
     }),
   )
 
@@ -325,10 +336,36 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
   let bootingRoot = false
   let eventFrame: number | undefined
   let eventTimer: ReturnType<typeof setTimeout> | undefined
+  let providerFrame: number | undefined
+  let providerIdle: number | undefined
+  let providerTimer: ReturnType<typeof setTimeout> | undefined
+
+  onMount(() => {
+    providerFrame = requestAnimationFrame(() => {
+      providerFrame = requestAnimationFrame(() => {
+        providerFrame = undefined
+        providerTimer = setTimeout(() => {
+          providerTimer = undefined
+          if ("requestIdleCallback" in window) {
+            providerIdle = requestIdleCallback(() => {
+              setProvidersEnabled(true)
+              setBackgroundEnabled(true)
+            }, { timeout: 5_000 })
+            return
+          }
+          setProvidersEnabled(true)
+          setBackgroundEnabled(true)
+        }, 10_000)
+      })
+    })
+  })
 
   onCleanup(() => {
     if (eventFrame !== undefined) cancelAnimationFrame(eventFrame)
     if (eventTimer !== undefined) clearTimeout(eventTimer)
+    if (providerFrame !== undefined) cancelAnimationFrame(providerFrame)
+    if (providerIdle !== undefined) cancelIdleCallback(providerIdle)
+    if (providerTimer !== undefined) clearTimeout(providerTimer)
   })
 
   const setProjects = (next: Project[] | ((draft: Project[]) => Project[])) => {
@@ -740,7 +777,9 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
     child: children.child,
     peek: children.peek,
     disableMcp: children.disableMcp,
+    enableProviders: children.enableProviders,
     queryOptions: queryOptionsApi,
+    loadProviders: () => setProvidersEnabled(true),
     refreshProviders,
     // bootstrap,
     updateConfig: updateConfigMutation.mutateAsync,

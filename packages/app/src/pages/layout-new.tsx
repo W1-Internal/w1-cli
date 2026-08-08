@@ -1,10 +1,14 @@
-import { createEffect, Suspense, type ParentProps } from "solid-js"
+import { createEffect, lazy, Suspense, type ParentProps } from "solid-js"
 import { createStore } from "solid-js/store"
 import { DebugBar } from "@/components/debug-bar"
-import { TabsInfoPopup } from "@/components/help-button"
-import { Titlebar, type TitlebarUpdate } from "@/components/titlebar"
+import type { TitlebarUpdate } from "@/components/titlebar"
 import { usePlatform } from "@/context/platform"
 import { setV2Toast, ToastRegion } from "@/utils/toast"
+
+const Titlebar = lazy(() => import("@/components/titlebar").then((module) => ({ default: module.Titlebar })))
+const TabsInfoPopup = lazy(() =>
+  import("@/components/help-button").then((module) => ({ default: module.TabsInfoPopup })),
+)
 
 export default function NewLayout(props: ParentProps) {
   const platform = usePlatform()
@@ -30,19 +34,23 @@ export default function NewLayout(props: ParentProps) {
         "padding-bottom": "env(safe-area-inset-bottom, 0px)",
       }}
     >
-      <Titlebar
-        update={update}
-        debugTools={
-          import.meta.env.DEV
-            ? { visible: state.debugTools, toggle: () => setState("debugTools", (value) => !value) }
-            : undefined
-        }
-      />
+      <Suspense fallback={<div class="h-10 shrink-0" />}>
+        <Titlebar
+          update={update}
+          debugTools={
+            import.meta.env.DEV
+              ? { visible: state.debugTools, toggle: () => setState("debugTools", (value) => !value) }
+              : undefined
+          }
+        />
+      </Suspense>
       <main class="flex-1 min-h-0 min-w-0 overflow-x-hidden flex flex-col items-start contain-strict">
         <Suspense>{props.children}</Suspense>
       </main>
       {import.meta.env.DEV && state.debugTools && <DebugBar inline />}
-      <TabsInfoPopup />
+      <Suspense>
+        <TabsInfoPopup />
+      </Suspense>
       <ToastRegion v2 />
     </div>
   )

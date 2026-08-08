@@ -22,6 +22,7 @@ export const homeSessionIndexKey = (server: string) => ["home", "session-index",
 export const homeSessionEventsKey = (server: string) => ["home", "session-events", server] as const
 
 type HomeSessionPage = { data?: V2SessionListResponse }
+type ProjectedHomeSessionPage = { data?: { data: Session[]; cursor: { next?: string } } }
 
 export async function loadHomeSessionIndex(
   list: (
@@ -31,7 +32,30 @@ export async function loadHomeSessionIndex(
   eventSequence = 0,
   signal?: AbortSignal,
 ) {
-  const data: SessionV2Info[] = []
+  return loadHomeSessionPages(list, parseHomeSessionIndex, eventSequence, signal)
+}
+
+export async function loadProjectedHomeSessionIndex(
+  list: (
+    input: { limit: number; order: "desc"; cursor?: string },
+    options: { signal?: AbortSignal },
+  ) => Promise<ProjectedHomeSessionPage>,
+  eventSequence = 0,
+  signal?: AbortSignal,
+) {
+  return loadHomeSessionPages(list, (sessions) => sessions, eventSequence, signal)
+}
+
+async function loadHomeSessionPages<T>(
+  list: (
+    input: { limit: number; order: "desc"; cursor?: string },
+    options: { signal?: AbortSignal },
+  ) => Promise<{ data?: { data: T[]; cursor: { next?: string } } }>,
+  project: (sessions: T[]) => Session[],
+  eventSequence: number,
+  signal?: AbortSignal,
+) {
+  const data: T[] = []
   let cursor: string | undefined
 
   for (;;) {
@@ -46,7 +70,7 @@ export async function loadHomeSessionIndex(
     const page = response.data!
     data.push(...page.data)
     if (page.data.length < HOME_V2_SESSION_PAGE_LIMIT || !page.cursor.next)
-      return { sessions: parseHomeSessionIndex(data), eventSequence }
+      return { sessions: project(data), eventSequence }
     cursor = page.cursor.next
   }
 }

@@ -1,7 +1,8 @@
 import type { ServerApi } from "./server"
 import type { ServerProtocol } from "./server-protocol"
-import type { AgentPartInput, FilePartInput, OpencodeClient, Session, TextPartInput } from "@opencode-ai/sdk/v2/client"
+import type { AgentPartInput, FilePartInput, OpencodeClient, TextPartInput } from "@opencode-ai/sdk/v2/client"
 import type {
+  FileDiffInfo,
   Project,
   ProjectCurrent,
   SessionApi,
@@ -15,6 +16,7 @@ import type {
   SessionShellInput,
   SessionShellOutput,
 } from "@opencode-ai/client/promise"
+import { legacySessionInfo } from "@/context/session-message-decode"
 
 type LegacyClient = OpencodeClient
 type LegacyFor = (directory?: string) => LegacyClient
@@ -51,36 +53,13 @@ type CompatibleInput = {
   current: ServerApi
   legacy: LegacyFor
   directory?: string
+  decodeVcsDiff: (buffer: ArrayBuffer) => Promise<FileDiffInfo[]>
+  decodeSessionList: (buffer: ArrayBuffer) => Promise<SessionInfo[]>
 }
 
 function mime(uri: string) {
   const match = /^data:([^;,]+)/.exec(uri)
   return match?.[1] ?? "application/octet-stream"
-}
-
-function sessionInfo(session: Session): SessionInfo {
-  return {
-    id: session.id,
-    parentID: session.parentID,
-    projectID: session.projectID,
-    agent: session.agent,
-    model: session.model && {
-      id: session.model.id,
-      providerID: session.model.providerID,
-      variant: session.model.variant,
-    },
-    cost: session.cost ?? 0,
-    tokens: session.tokens ?? { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
-    time: session.time,
-    title: session.title,
-    location: { directory: session.directory, workspaceID: session.workspaceID },
-    subpath: session.path,
-    revert: session.revert && {
-      messageID: session.revert.messageID,
-      partID: session.revert.partID,
-      snapshot: session.revert.snapshot,
-    },
-  }
 }
 
 export function createCompatibleApi(input: CompatibleInput): CompatibleApi {
@@ -148,29 +127,34 @@ function createV1Api(input: CompatibleInput): CompatibleApi {
               search: value.search,
               limit: value.limit,
             },
-            options,
+            { ...options, parseAs: "arrayBuffer" },
           )
-          return { data: (result.data ?? []).map(sessionInfo), cursor: {} }
+          if (!(result.data instanceof ArrayBuffer)) throw new Error("Session list response is not an ArrayBuffer")
+          return { data: await input.decodeSessionList(result.data), cursor: {} }
         }
-        const result = await legacy({ directory: value?.directory }).session.list({
-          directory: value?.directory,
-          roots: value?.parentID === null ? true : undefined,
-          search: value?.search,
-          limit: value?.limit,
-        })
-        return { data: (result.data ?? []).map(sessionInfo), cursor: {} }
+        const result = await legacy({ directory: value?.directory }).session.list(
+          {
+            directory: value?.directory,
+            roots: value?.parentID === null ? true : undefined,
+            search: value?.search,
+            limit: value?.limit,
+          },
+          { parseAs: "arrayBuffer" },
+        )
+        if (!(result.data instanceof ArrayBuffer)) throw new Error("Session list response is not an ArrayBuffer")
+        return { data: await input.decodeSessionList(result.data), cursor: {} }
       },
       async create(value?: Parameters<ServerApi["session"]["create"]>[0]) {
         const result = await legacy(value?.location ?? undefined).session.create({
           directory: directory(value?.location ?? undefined),
         })
         if (!result.data) throw new Error("Failed to create session")
-        return sessionInfo(result.data)
+        return legacySessionInfo(result.data)
       },
       async get(value: Parameters<ServerApi["session"]["get"]>[0]) {
         const result = await legacy().session.get(value)
         if (!result.data) throw new Error(`Session not found: ${value.sessionID}`)
-        return sessionInfo(result.data)
+        return legacySessionInfo(result.data)
       },
       async active() {
         const result = await legacy().session.status()
@@ -192,7 +176,7 @@ function createV1Api(input: CompatibleInput): CompatibleApi {
       async fork(value: Parameters<ServerApi["session"]["fork"]>[0]) {
         const result = await legacy().session.fork(value)
         if (!result.data) throw new Error("Failed to fork session")
-        return sessionInfo(result.data)
+        return legacySessionInfo(result.data)
       },
       async interrupt(value: Parameters<ServerApi["session"]["interrupt"]>[0]) {
         await legacy().session.abort(value)
@@ -341,20 +325,15 @@ function createV1Api(input: CompatibleInput): CompatibleApi {
         return located(result.data ?? [], value?.location)
       },
       async diff(value: Parameters<ServerApi["vcs"]["diff"]>[0]) {
-        const result = await legacy(value.location).vcs.diff({
-          mode: value.mode === "working" ? "git" : value.mode,
-          context: value.context,
-        })
-        return located(
-          (result.data ?? []).map((file) => ({
-            file: file.file,
-            patch: file.patch ?? "",
-            additions: file.additions,
-            deletions: file.deletions,
-            status: file.status ?? "modified",
-          })),
-          value.location,
+        const result = await legacy(value.location).vcs.diff(
+          {
+            mode: value.mode === "working" ? "git" : value.mode,
+            context: value.context,
+          },
+          { parseAs: "arrayBuffer" },
         )
+        if (!(result.data instanceof ArrayBuffer)) throw new Error("VCS diff response is not an ArrayBuffer")
+        return located(await input.decodeVcsDiff(result.data), value.location)
       },
     },
     file: {

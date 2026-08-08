@@ -1,16 +1,16 @@
 import type { Session } from "@opencode-ai/sdk/v2/client"
-import { preloadMarkdown } from "@opencode-ai/session-ui/markdown-cache"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { useQuery } from "@tanstack/solid-query"
 import { DateTime } from "luxon"
-import { type Accessor, createEffect, createMemo, createRoot, type JSX, startTransition } from "solid-js"
+import { type Accessor, createEffect, createMemo, createSignal, onCleanup, type JSX, startTransition } from "solid-js"
 import { produce } from "solid-js/store"
 import { useCommand } from "@/context/command"
 import {
-  loadHomeSessionIndex,
-  retainHomeSessions,
+  loadProjectedHomeSessionIndex,
   type HomeSessionEvents,
 } from "@/context/global-sync/home-session-index"
+import { takeRecentSessions } from "@/context/global-sync/session-trim"
+import { decodeHomeSessionPage } from "@/context/session-message-decoder"
 import type { LocalProject } from "@/context/layout"
 import { useLanguage } from "@/context/language"
 import { ServerConnection } from "@/context/server"
@@ -25,6 +25,7 @@ import { archiveHomeSession } from "../home-session-archive"
 import type { HomeController } from "./home-controller"
 
 const HOME_SESSION_LIMIT = 64
+const HOME_SESSION_RENDER_BATCH = 4
 export type HomeSessionRecord = {
   session: Session
   project: LocalProject
@@ -67,8 +68,17 @@ export function createHomeSessionsController(home: HomeController) {
       if (!ctx) return { sessions: [], eventSequence: 0 }
       const cache = homeSessions()
       const eventSequence = cache.eventSequence()
-      const index = await loadHomeSessionIndex(
-        (input, options) => ctx.sdk.client.v2.session.list(input, options),
+      const index = await loadProjectedHomeSessionIndex(
+        async (input, options) => {
+          const response = await ctx.sdk.client.v2.session.list(input, { ...options, parseAs: "arrayBuffer" })
+          if (!(response.data instanceof ArrayBuffer)) throw new Error("Home session response is not an ArrayBuffer")
+          return {
+            data: await decodeHomeSessionPage(response.data, {
+              directories: projectDirectories(),
+              limit: HOME_SESSION_LIMIT,
+            }),
+          }
+        },
         eventSequence,
         signal,
       )
@@ -80,13 +90,16 @@ export function createHomeSessionsController(home: HomeController) {
     refetchOnMount: true,
     refetchOnReconnect: true,
   }))
-  const indexedSessions = createMemo(() =>
-    retainHomeSessions(
-      homeSessions().sessions(sessionLoad.data, sessionEventLoad.data),
+  const indexedSessions = createMemo(() => {
+    const directories = new Set(projectDirectories().map(pathKey))
+    return takeRecentSessions(
+      homeSessions()
+        .sessions(sessionLoad.data, sessionEventLoad.data)
+        .filter((session) => directories.has(pathKey(session.directory))),
       HOME_SESSION_LIMIT,
-      Date.now(),
-    ),
-  )
+      Number.NEGATIVE_INFINITY,
+    )
+  })
   const allRecords = createMemo(() =>
     buildHomeSessionRecords({
       sessions: indexedSessions,
@@ -95,43 +108,21 @@ export function createHomeSessionsController(home: HomeController) {
       projectByID,
     }),
   )
-  const records = createMemo(() => allRecords().slice(0, HOME_SESSION_LIMIT))
-  const groups = createMemo(() => groupSessions(records(), language))
-  const prefetched = new Set<string>()
-
+  const [visible, setVisible] = createSignal(HOME_SESSION_RENDER_BATCH)
+  let revealFrame: number | undefined
   createEffect(() => {
-    const ctx = home.server.focusedContext()
-    const conn = home.server.focused()
-    if (!ctx || !conn) return
-    records()
-      .slice(0, 2)
-      .forEach((record) => {
-        const key = `${ServerConnection.key(conn)}\0${record.session.id}`
-        if (prefetched.has(key)) return
-        prefetched.add(key)
-        createRoot((dispose) => {
-          try {
-            void ctx.sync.session
-              .sync(record.session.id)
-              .then(() =>
-                Promise.all(
-                  (ctx.sync.session.data.message[record.session.id] ?? []).flatMap((message) =>
-                    (ctx.sync.session.data.part[message.id] ?? []).flatMap((part) => {
-                      if (part.type !== "text" || !part.text) return []
-                      return preloadMarkdown(part.text, part.id)
-                    }),
-                  ),
-                ),
-              )
-              .catch(() => {})
-              .finally(dispose)
-          } catch {
-            dispose()
-          }
-        })
-      })
+    const count = Math.min(allRecords().length, HOME_SESSION_LIMIT)
+    if (visible() >= count || revealFrame !== undefined) return
+    revealFrame = requestAnimationFrame(() => {
+      revealFrame = undefined
+      setVisible((current) => Math.min(current + HOME_SESSION_RENDER_BATCH, count))
+    })
   })
-
+  onCleanup(() => {
+    if (revealFrame !== undefined) cancelAnimationFrame(revealFrame)
+  })
+  const records = createMemo(() => allRecords().slice(0, visible()))
+  const groups = createMemo(() => groupSessions(records(), language))
   command.register("home.palette", () => [
     {
       id: "command.palette",

@@ -15,6 +15,8 @@ import { detectServerProtocol, type ServerProtocol } from "@/utils/server-protoc
 import { createCompatibleApi, type CompatibleApi } from "@/utils/server-compat"
 import { Worktree } from "@/utils/worktree"
 import { WorkspaceOperation } from "@/utils/workspace-operation"
+import { decodeVcsDiff } from "@/utils/vcs-diff-decoder"
+import { decodeSessionList } from "./session-message-decoder"
 
 const isAbortError = (error: unknown) =>
   error !== null && typeof error === "object" && "name" in error && error.name === "AbortError"
@@ -430,7 +432,7 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
       throwOnError: true,
       directory,
     })
-  const api = createCompatibleApi({ protocol, current: currentApi, legacy })
+  const api = createCompatibleApi({ protocol, current: currentApi, legacy, decodeVcsDiff, decodeSessionList })
 
   return {
     server,
@@ -516,6 +518,8 @@ function createDirSdkContext(directory: string, serverSDK: ServerSDKBase) {
       current: serverSDK.currentApi,
       legacy: (next) => serverSDK.createClient({ directory: next ?? directory, throwOnError: true }),
       directory,
+      decodeVcsDiff,
+      decodeSessionList,
     }),
     createApi(next: string) {
       return createCompatibleApi({
@@ -523,6 +527,8 @@ function createDirSdkContext(directory: string, serverSDK: ServerSDKBase) {
         current: serverSDK.currentApi,
         legacy: (target) => serverSDK.createClient({ directory: target ?? next, throwOnError: true }),
         directory: next,
+        decodeVcsDiff,
+        decodeSessionList,
       })
     },
     event: emitter,

@@ -7,6 +7,7 @@ import { TextField } from "@opencode-ai/ui/text-field"
 import { type Component, For, Show } from "solid-js"
 import { useLanguage } from "@/context/language"
 import { useModels } from "@/context/models"
+import { useServerSync } from "@/context/server-sync"
 import { popularProviders } from "@/hooks/use-providers"
 import { SettingsList } from "./settings-list"
 import { SettingsServerPicker, SettingsServerScope } from "./settings-server-picker"
@@ -43,6 +44,7 @@ export const SettingsModels: Component = () => {
 const SettingsModelsContent: Component = () => {
   const language = useLanguage()
   const models = useModels()
+  useServerSync()().loadProviders()
 
   const list = useFilteredList<ModelItem>({
     items: (_filter) => models.list(),

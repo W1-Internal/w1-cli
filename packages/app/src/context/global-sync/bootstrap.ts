@@ -152,12 +152,6 @@ export async function bootstrapGlobal(input: {
   queryClient: QueryClient
 }) {
   const slow = [
-    () => input.queryClient.fetchQuery(loadGlobalConfigQuery(input.scope, input.serverSDK, input.protocol)),
-    () =>
-      input.queryClient.fetchQuery(
-        loadProvidersQuery(input.scope, null, input.serverAPI, input.serverSDK, input.protocol),
-      ),
-    () => input.queryClient.fetchQuery(loadPathQuery(input.scope, null, input.serverSDK, input.protocol)),
     () =>
       input.queryClient
         .fetchQuery(loadProjectsQuery(input.scope, input.serverAPI.project))
@@ -524,17 +518,6 @@ export async function bootstrapDirectory(input: {
           input.queryClient.fetchQuery(
             loadMcpResourcesQuery(input.scope, input.directory, input.api.mcp, input.sdk, input.protocol),
           )),
-      () =>
-        input.queryClient
-          .fetchQuery(loadProvidersQuery(input.scope, input.directory, input.api, input.sdk, input.protocol))
-          .catch((err) => {
-            const project = getFilename(input.directory)
-            showToast({
-              variant: "error",
-              title: input.translate("toast.project.reloadFailed.title", { project }),
-              description: formatServerError(err, input.translate),
-            })
-          }),
     ].filter(Boolean) as (() => Promise<any>)[]
 
     await waitForPaint()

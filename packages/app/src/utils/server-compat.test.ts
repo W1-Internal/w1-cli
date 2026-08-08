@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import { createApiForServer, createSdkForServer } from "./server"
 import { createCompatibleApi } from "./server-compat"
+import { decodeVcsDiffData } from "./vcs-diff-data"
+import { decodeLegacySessionList } from "@/context/session-message-decode"
 
 function setup(
   protocol: "v1" | "v2" | Promise<"v1" | "v2">,
@@ -48,6 +50,8 @@ function setup(
     current: createApiForServer({ server, fetch: fetcher }),
     legacy: (directory) => createSdkForServer({ server, fetch: fetcher, directory, throwOnError: true }),
     directory: "/repo",
+    decodeVcsDiff: async (buffer) => decodeVcsDiffData(buffer),
+    decodeSessionList: async (buffer) => decodeLegacySessionList(buffer),
   })
   return { api, requests }
 }

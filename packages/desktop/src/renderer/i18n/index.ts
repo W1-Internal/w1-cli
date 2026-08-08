@@ -112,7 +112,6 @@ function pickLocale(value: unknown): Locale | null {
 }
 
 const base = i18n.flatten(desktopEn)
-
 function build(locale: Locale): Dictionary {
   if (locale === "en") return base
   if (locale === "zh") return { ...base, ...i18n.flatten(desktopZh) }
@@ -202,7 +201,7 @@ export function initI18n(): Promise<Locale> {
     const next = pickLocale(value) ?? state.locale
 
     state.locale = next
-    state.dict = build(next)
+    state.dict = await build(next)
     return next
   })().catch(() => state.locale)
 

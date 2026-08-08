@@ -694,8 +694,12 @@ export default function Page() {
       queryFn: mode
         ? () =>
             sdk()
-              .api.vcs.diff({ location: { directory: sdk().directory }, mode: mode === "git" ? "working" : mode })
-              .then((result) => result.data)
+              .api.vcs.diff({
+                location: { directory: sdk().directory },
+                mode: mode === "git" ? "working" : mode,
+                context: 0,
+              })
+              .then((result) => result.data.map((diff) => ({ ...diff, patch: "" })))
               .catch((error) => {
                 console.debug("[session-review] failed to load vcs diff", { mode, error })
                 return []

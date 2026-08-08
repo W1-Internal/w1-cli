@@ -9,6 +9,7 @@ import { createStore } from "solid-js/store"
 import { useLanguage } from "@/context/language"
 import { useModels } from "@/context/models"
 import { useServerSDK } from "@/context/server-sdk"
+import { useServerSync } from "@/context/server-sync"
 import { popularProviders } from "@/hooks/use-providers"
 import { Persist, persisted } from "@/utils/persist"
 import { SettingsListV2 } from "./parts/list"
@@ -23,6 +24,7 @@ export const SettingsModelsV2: Component = () => {
   const language = useLanguage()
   const models = useModels()
   const serverSdk = useServerSDK()
+  useServerSync()().loadProviders()
   const [store, setStore] = persisted(
     Persist.serverGlobal(serverSdk().scope, "settings-v2.models.providers"),
     createStore({ collapsed: {} as Record<string, boolean> }),

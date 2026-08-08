@@ -56,6 +56,32 @@ Benchmarks do not assert machine-dependent performance budgets. Streaming proces
 
 Committed smoke and regression tests continue to own correctness coverage for pagination, tab paint, context resize, collapse state, and composer spacing.
 
+## Desktop profiler
+
+The desktop profiler launches the existing production build directly, creates isolated desktop state, chooses an available CDP port, and writes reports under the OS temporary directory by default.
+
+```sh
+bun run profile:desktop --help
+```
+
+Create a private partial snapshot from the default local database and run Home once:
+
+```sh
+bun run profile:desktop --partial-snapshot-out /tmp/opencode-perf.db \
+  --window-end 2026-08-04T06:14:26.878Z \
+  --scenarios home,calibration --skip-build
+```
+
+Repeat against the immutable partial snapshot:
+
+```sh
+bun run profile:desktop --mode partial-snapshot --db /tmp/opencode-perf.db \
+  --window-end 2026-08-04T06:14:26.878Z \
+  --scenarios home,calibration --runs 3 --skip-build
+```
+
+Partial snapshots contain private application data and must not be committed or shared. The profiler copies each partial snapshot to a per-run working database and remaps selected project paths to temporary workspaces, leaving the source snapshot unchanged. `PROFILE_SUMMARY` is the compact comparison output; `PROFILE_REPORT` points to the complete JSON report with the database hash, invocation parameters, raw runs, and attribution data.
+
 ## Chrome traces
 
 Set `OPENCODE_PERFORMANCE_TRACE_DIR` to emit a standard Chrome DevTools trace for every benchmark page automatically:
