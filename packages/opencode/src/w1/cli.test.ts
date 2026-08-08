@@ -1,10 +1,13 @@
 import { expect, test } from "bun:test"
+import { mkdir } from "fs/promises"
 import path from "path"
 import os from "os"
 
 test("the W1 command completes a streamed turn through the real stdio adapter", async () => {
   const root = (await Bun.$`mktemp -d ${path.join(os.tmpdir(), "w1-cli-command.XXXXXX")}`.text()).trim()
   const runtime = path.join(root, "mock-runtime.mjs")
+  await mkdir(path.join(root, ".w1"), { recursive: true })
+  await Bun.write(path.join(root, ".w1", "auth.json"), JSON.stringify({ token: "w1s_fixture" }))
   await Bun.write(
     runtime,
     [
@@ -25,7 +28,7 @@ test("the W1 command completes a streamed turn through the real stdio adapter", 
     const child = Bun.spawn({
       cmd: [process.execPath, path.resolve(import.meta.dir, "../index.ts"), root, "--prompt", "hello"],
       cwd: root,
-      env: { ...process.env, W1_RUNTIME_PATH: runtime },
+      env: { ...process.env, HOME: root, W1_RUNTIME_PATH: runtime },
       stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",

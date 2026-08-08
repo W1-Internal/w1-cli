@@ -1,8 +1,8 @@
 import { cmd } from "./cmd"
 import { W1Runtime, type RuntimeClient } from "@/w1/runtime"
 import path from "path"
-import os from "os"
 import { stat } from "fs/promises"
+import { W1Auth } from "@/w1/auth"
 
 type Check = {
   name: string
@@ -58,15 +58,19 @@ async function diagnostics(directory: string) {
       : { name: "git", status: "warn", detail: "folder is not a Git repository" },
   )
 
-  const authPath = path.join(os.homedir(), ".w1", "auth.json")
-  const auth = Bun.file(authPath)
+  const authPath = W1Auth.sessionPath()
+  const auth = await W1Auth.readSession()
   checks.push(
-    (await auth.exists())
-      ? { name: "session", status: "ok", detail: "shared GUI session is present (contents not read)" }
+    auth
+      ? {
+          name: "session",
+          status: "ok",
+          detail: `shared W1 session is present${auth.email ? ` for ${auth.email}` : ""}`,
+        }
       : {
           name: "session",
           status: "fail",
-          detail: "not signed in; open W1 desktop or VS Code and sign in",
+          detail: `not signed in; run \`w1 login\` (shared store: ${authPath})`,
         },
   )
 

@@ -8,6 +8,7 @@ import { errorMessage } from "./util/error"
 import { pathToFileURL } from "url"
 import { W1Command } from "./cli/cmd/w1"
 import { DoctorCommand } from "./cli/cmd/doctor"
+import { AuthCommand, LoginCommand, LogoutCommand } from "./cli/cmd/w1-auth"
 
 const args = hideBin(process.argv)
 
@@ -49,6 +50,9 @@ const cli = yargs(args)
   })
   .usage("")
   .completion("completion", "generate shell completion script")
+  .command(AuthCommand)
+  .command(LoginCommand)
+  .command(LogoutCommand)
   .command(DoctorCommand)
   .command(W1Command)
   .fail((msg, err) => {

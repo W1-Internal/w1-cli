@@ -3,9 +3,10 @@
 W1 in your terminal: the same one-actor product runtime used by W1 desktop and the VS Code
 extension, without an Electron renderer or editor extension host in the way.
 
-This repository is the terminal product and an operational rescue surface. It uses the user's
-existing W1 GUI/browser session from `~/.w1/auth.json`; it does not introduce a second login or ask
-users to paste credentials into a terminal.
+This repository is the terminal product and an operational rescue surface. `w1 login` opens the
+hosted W1 sign-in/sign-up page in an external browser and stores the resulting session in
+`~/.w1/auth.json`, the same protected location W1 desktop uses. The CLI owns this flow itself;
+desktop does not need to be installed or running, and users never paste credentials into a terminal.
 
 ## Current commands
 
@@ -14,6 +15,9 @@ w1 [project]                 start an interactive W1 session
 w1 --prompt "inspect this"   run one turn and exit
 w1 --image screenshot.png   attach an image to the first turn
 w1 --session THREAD_ID      resume a durable W1 thread
+w1 login                    sign in or create an account in the external browser
+w1 auth status              show the shared W1 session status
+w1 logout                   revoke and remove the shared W1 session
 w1 doctor [project]         inspect filesystem, Git, session, runtime, backend and TTY health
 ```
 
@@ -34,8 +38,9 @@ current invocation.
 - OpenCode supplies the MIT-licensed terminal chassis and cross-platform build foundation.
 - W1's bundled `run-stream.mjs` remains the only actor/tool/runtime implementation.
 - The CLI launches the versioned W1 NDJSON/`@@TAG@@` stdio protocol through its own Bun runtime.
-- No localhost HTTP server is required for the W1 terminal path.
-- Tokens are never copied into argv, logs, traces or CLI-owned configuration.
+- The actor runtime needs no localhost HTTP server; sign-in uses only a short-lived loopback callback.
+- Tokens are never copied into argv, logs, traces or ordinary CLI configuration. They live only in
+  the permission-protected shared W1 session store.
 
 The CLI bypasses Electron IPC, renderer state, VS Code webviews, extension-host lifecycle and their
 reconnect overlays. It cannot bypass W1 backend/provider outages, DNS/TLS failures or an expired
@@ -67,7 +72,7 @@ Build one native artifact:
 
 ```bash
 cd packages/opencode
-OPENCODE_VERSION=0.1.0 bun run build --single --skip-install --skip-embed-web-ui
+W1_CLI_VERSION=0.1.1 bun run build --single --skip-install --skip-embed-web-ui
 ```
 
 Set `W1_RUNTIME_BUNDLE_DIR` when the harness bundle is not in the default sibling location.

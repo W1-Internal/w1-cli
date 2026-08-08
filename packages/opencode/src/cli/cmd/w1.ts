@@ -4,6 +4,7 @@ import { createInterface, type Interface } from "readline/promises"
 import { randomUUID } from "crypto"
 import path from "path"
 import { stat } from "fs/promises"
+import { W1Auth } from "@/w1/auth"
 
 const color = {
   reset: "\x1b[0m",
@@ -65,6 +66,20 @@ export const W1Command = cmd<{}, Args>({
     const initialPrompt = args.prompt?.trim() || piped || undefined
     if (!initialPrompt && !process.stdin.isTTY) {
       throw new Error("Pass --prompt or pipe a request into w1.")
+    }
+
+    if (!(await W1Auth.readSession())) {
+      if (!process.stdin.isTTY || !process.stdout.isTTY) {
+        throw new Error("Not signed in. Run `w1 login` in an interactive terminal, then retry.")
+      }
+      write(`${color.yellow}W1 needs a browser session before the first turn.${color.reset}\n`)
+      const session = await W1Auth.signIn({
+        onStart(url) {
+          write(`Opening your browser. If it does not open, visit:\n${color.dim}${url}${color.reset}\n`)
+          write("Waiting for sign-in…\n")
+        },
+      })
+      write(`Signed in${session.email ? ` as ${session.email}` : ""}.\n`)
     }
 
     const readline = createInterface({ input: process.stdin, output: process.stdout })
