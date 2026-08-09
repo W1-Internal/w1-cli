@@ -32,10 +32,11 @@ jobs:
         run: bun typecheck
 
       - name: Run focused W1 TUI contracts
+        working-directory: packages/opencode
         run: >-
           bun test
-          packages/opencode/src/w1/cli.test.ts
-          packages/opencode/test/cli/run/footer.view.test.tsx
+          src/w1/cli.test.ts
+          test/cli/run/footer.view.test.tsx
 
       - name: Run OpenCode package unit suite
         working-directory: packages/opencode
