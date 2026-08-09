@@ -19,7 +19,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: W1-Internal/w1
-          ref: 02d509c14d3927acf9173428b8df154ffc914683
+          ref: 91808b2e98f8ba16287c5baf9266c11bf487740f
           path: .w1-engine-source
           persist-credentials: false
 
@@ -111,8 +111,3 @@ jobs:
           test -s "$bin_dir/w1-runtime/run-stream.mjs"
           test -s "$bin_dir/w1-runtime/BUILD_ID"
           file "$bin_dir/w1" | grep -Eq 'Mach-O.*arm64|Mach-O.*ARM64'
-
-      - name: Observe full OpenCode package suite (main baseline is red)
-        continue-on-error: true
-        working-directory: packages/opencode
-        run: bun test --timeout 30000 --only-failures

@@ -10,9 +10,10 @@ import {
   EngineClient,
   engineClientVersion,
   resolveEngine,
+  selectedMessagesAfterSnapshot,
   type ConversationItem,
   type EngineEvent,
-  type EnginePush,
+  type ThreadPush,
   type ThreadSummary,
 } from "./engine"
 
@@ -34,7 +35,7 @@ type Controller = {
   state: ThreadSummary["state"]
   cursor: number
   hydrated: boolean
-  buffered: EnginePush[]
+  buffered: ThreadPush[]
   items: ConversationItem[]
   seen: Set<string>
   turnStarted: number
@@ -45,7 +46,7 @@ type Controller = {
   pending?: PendingInteraction
   tools: Map<string, ToolTab>
   tabs: FooterSubagentState
-  subscription?: { close(): void }
+  subscription?: { close(): Promise<void> }
 }
 
 const MAX_TOOL_TABS = 30
@@ -128,6 +129,29 @@ function history(items: ConversationItem[]): RunPrompt[] {
   )
 }
 
+function projectConversationItem(event: EngineEvent): ConversationItem | undefined {
+  if (event.kind === "turn.submitted") {
+    return { eventId: event.eventId, threadId: event.threadId, turnId: event.turnId, sequence: event.sequence, at: event.at, kind: "user.message", role: "user", text: String(event.data.text ?? "") }
+  }
+  if (event.kind === "turn.completed") {
+    const payload = record(event.data.payload)
+    return { eventId: event.eventId, threadId: event.threadId, turnId: event.turnId, sequence: event.sequence, at: event.at, kind: "assistant.message", role: "assistant", text: String(payload.summary ?? payload.reply ?? "").trim(), status: String(payload.status ?? event.data.status ?? "completed") }
+  }
+  if (event.kind === "user.response") {
+    return { eventId: event.eventId, threadId: event.threadId, turnId: event.turnId, sequence: event.sequence, at: event.at, kind: "user.response", role: "user", ...(typeof event.data.answer === "string" ? { text: event.data.answer } : {}), data: { ...event.data } }
+  }
+  if (event.kind !== "worker.event") return
+  const tag = String(event.data.tag ?? "")
+  const payload = record(event.data.payload)
+  const eventType = String(payload.t ?? "")
+  const kind = tag === "QUESTION"
+    ? "question"
+    : tag === "EVT" && ["action", "observation", "tool_registered", "tool_running"].includes(eventType)
+      ? "tool.event"
+      : "runtime.event"
+  return { eventId: event.eventId, threadId: event.threadId, turnId: event.turnId, sequence: event.sequence, at: event.at, kind, role: "runtime", data: { tag, payload } }
+}
+
 function dataUrl(value: string) {
   const match = /^data:([^;,]+);base64,(.*)$/s.exec(value)
   if (!match) throw new Error("W1 could not encode the image attachment.")
@@ -166,15 +190,13 @@ export async function runW1Tui(input: Input) {
   }
 
   let activeThreadID = input.threadID
-  let summaries = await engine.request("engine.threads.list", { workspacePath: input.directory }) as ThreadSummary[]
+  let summaries: ThreadSummary[] = []
   const controllers = new Map<string, Controller>()
   const requestOwners = new Map<string, string>()
   let footer: FooterApi | undefined
   let lifecycle: Lifecycle | undefined
   let elapsedTimer: ReturnType<typeof setInterval> | undefined
   let initial = await initialAttachments(input, activeThreadID)
-  let refreshing = false
-  let refreshTimer: ReturnType<typeof setTimeout> | undefined
 
   const active = () => controllers.get(activeThreadID)
   const isVisible = (controller: Controller) => controller.id === activeThreadID && footer
@@ -203,31 +225,27 @@ export async function runW1Tui(input: Input) {
       },
     })
   }
-  const refreshThreads = async () => {
-    if (refreshing) return
-    refreshing = true
-    try {
-      summaries = await engine.request("engine.threads.list", { workspacePath: input.directory }) as ThreadSummary[]
-      for (const item of summaries) {
-        const controller = controllers.get(item.threadId)
-        if (controller) {
-          controller.title = item.title
-          controller.state = item.state
-        }
-      }
-      publishThreads()
-    } finally {
-      refreshing = false
+
+  const updateSummary = (next: ThreadSummary) => {
+    summaries = [next, ...summaries.filter((item) => item.threadId !== next.threadId)]
+      .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))
+    const controller = controllers.get(next.threadId)
+    if (controller) {
+      controller.title = next.title
+      controller.state = next.state
+      controller.cursor = Math.max(controller.cursor, next.lastSequence)
     }
+    publishThreads()
   }
-  const scheduleRefresh = () => {
-    if (refreshTimer) return
-    refreshTimer = setTimeout(() => {
-      refreshTimer = undefined
-      void refreshThreads()
-    }, 100)
-    refreshTimer.unref?.()
-  }
+
+  const catalogSubscription = await engine.subscribeWorkspace(
+    { workspacePath: input.directory },
+    (message) => updateSummary(message.thread),
+    (snapshot) => {
+      summaries = [...snapshot.threads]
+        .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))
+    },
+  )
 
   const showPending = (controller: Controller) => {
     if (!isVisible(controller)) return
@@ -347,13 +365,14 @@ export async function runW1Tui(input: Input) {
       }
     }
     controller.pending = undefined
-    scheduleRefresh()
   }
 
   const onDurable = async (controller: Controller, event: EngineEvent) => {
     if (controller.seen.has(event.eventId)) return
     controller.seen.add(event.eventId)
     controller.cursor = Math.max(controller.cursor, event.sequence)
+    const item = projectConversationItem(event)
+    if (item) controller.items.push(item)
     if (event.kind === "turn.submitted") {
       controller.state = "running"
       controller.turnStarted = Date.parse(event.at) || Date.now()
@@ -376,10 +395,9 @@ export async function runW1Tui(input: Input) {
     } else if (event.kind === "thread.renamed") {
       controller.title = String(event.data.title ?? controller.title)
     }
-    scheduleRefresh()
   }
 
-  const onPush = async (controller: Controller, push: EnginePush) => {
+  const onPush = async (controller: Controller, push: ThreadPush) => {
     if (!controller.hydrated) {
       controller.buffered.push(push)
       return
@@ -388,21 +406,47 @@ export async function runW1Tui(input: Input) {
     else await onFrame(controller, push.event.tag, push.event.data)
   }
 
+  const installSnapshot = async (
+    controller: Controller,
+    snapshot: { items: ConversationItem[]; lastSequence: number },
+  ) => {
+    controller.items = snapshot.items
+    controller.cursor = Math.max(controller.cursor, snapshot.lastSequence)
+    controller.seen = new Set(snapshot.items.map((item) => item.eventId))
+    const pending = selectedMessagesAfterSnapshot(controller.buffered.splice(0), snapshot.lastSequence)
+    controller.hydrated = true
+    for (const push of pending) await onPush(controller, push)
+  }
+
+  const refreshConversation = async (controller: Controller) => {
+    controller.hydrated = false
+    const snapshot = await engine.request("engine.conversation.snapshot", {
+      threadId: controller.id,
+      workspacePath: input.directory,
+    }) as { items: ConversationItem[]; lastSequence: number }
+    await installSnapshot(controller, snapshot)
+  }
+
   const ensureController = async (id: string) => {
     const existing = controllers.get(id)
     if (existing) return existing
     const summary = summaries.find((item) => item.threadId === id)
     const controller = newController(id, summary)
     controllers.set(id, controller)
-    const subscription = await engine.subscribeThread({ threadId: id, afterSequence: 0 }, (push) => void onPush(controller, push))
-    controller.subscription = subscription
-    controller.state = subscription.active ? "running" : controller.state
-    controller.items = await engine.request("engine.conversation.get", { threadId: id }) as ConversationItem[]
-    controller.cursor = Math.max(controller.cursor, ...controller.items.map((item) => item.sequence), 0)
-    for (const item of controller.items) controller.seen.add(item.eventId)
-    controller.hydrated = true
-    for (const push of controller.buffered.splice(0)) await onPush(controller, push)
-    return controller
+    try {
+      const subscription = await engine.subscribeThread(
+        { threadId: id, workspacePath: input.directory, afterSequence: 0 },
+        (push) => void onPush(controller, push),
+      )
+      controller.subscription = subscription
+      controller.state = subscription.active ? "running" : controller.state
+      await refreshConversation(controller)
+      return controller
+    } catch (cause) {
+      controllers.delete(id)
+      await controller.subscription?.close().catch(() => undefined)
+      throw cause
+    }
   }
 
   const replay = async (controller: Controller) => {
@@ -439,15 +483,14 @@ export async function runW1Tui(input: Input) {
   const switchThread = async (id: string) => {
     const target = id.trim()
     if (!target || target === activeThreadID) return true
-    await refreshThreads()
     if (!summaries.some((item) => item.threadId === target)) {
       footer?.append(system(`That task is not in this workspace: ${target}`, "error"))
       return false
     }
     activeThreadID = target
+    const existed = controllers.has(target)
     const controller = await ensureController(target)
-    controller.items = await engine.request("engine.conversation.get", { threadId: target }) as ConversationItem[]
-    for (const item of controller.items) controller.seen.add(item.eventId)
+    if (existed) await refreshConversation(controller)
     await replay(controller)
     return true
   }
@@ -504,7 +547,7 @@ export async function runW1Tui(input: Input) {
       finishAssistant(controller, true)
       void engine.request("turn.stop", { threadId: controller.id })
     },
-    onThreadCatalogRequest: refreshThreads,
+    onThreadCatalogRequest: publishThreads,
     onThreadSelect: switchThread,
     onThreadNew: newThread,
   })
@@ -552,7 +595,6 @@ export async function runW1Tui(input: Input) {
     if (controller) controller.state = "failed"
     footer?.event({ type: "turn.idle", queue: 0 })
     footer?.append(system(cause instanceof Error ? cause.message : String(cause), "error"))
-    scheduleRefresh()
   }))
 
   elapsedTimer = setInterval(() => {
@@ -567,8 +609,10 @@ export async function runW1Tui(input: Input) {
     await closed.promise
   } finally {
     if (elapsedTimer) clearInterval(elapsedTimer)
-    if (refreshTimer) clearTimeout(refreshTimer)
-    for (const controller of controllers.values()) controller.subscription?.close()
+    await Promise.allSettled([
+      catalogSubscription.close(),
+      ...[...controllers.values()].flatMap((controller) => controller.subscription ? [controller.subscription.close()] : []),
+    ])
     engine.close()
     await lifecycle.close({ showExit: true, sessionID: activeThreadID, history: history(active()?.items ?? []) })
   }

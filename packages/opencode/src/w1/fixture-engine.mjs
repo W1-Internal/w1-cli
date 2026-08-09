@@ -10,7 +10,9 @@ const buildId = readFileSync(path.join(path.dirname(new URL(import.meta.url).pat
 mkdirSync(path.dirname(endpoint), { recursive: true })
 const threads = new Map()
 const subscriptions = new Map()
+const catalogSubscriptions = new Map()
 let sequence = 0
+let catalogCursor = 0
 
 function event(threadId, turnId, kind, data) {
   return { schemaVersion: 1, eventId: randomUUID(), threadId, turnId, sequence: ++sequence, kind, phase: kind === "turn.completed" ? "terminal" : "runtime", at: new Date().toISOString(), data }
@@ -22,6 +24,27 @@ function push(threadId, value, transient = false) {
   subscription.socket.write(JSON.stringify(transient
     ? { type: "transient", subscriptionId: subscription.id, threadId, event: value }
     : { type: "event", subscriptionId: subscription.id, threadId, cursor: value.sequence, event: value }) + "\n")
+}
+
+function summary(value) {
+  if (!value) return value
+  const { conversation: _conversation, ...thread } = value
+  return thread
+}
+
+function pushCatalog(value) {
+  const thread = summary(value)
+  const cursor = ++catalogCursor
+  for (const subscription of catalogSubscriptions.values()) {
+    if (path.resolve(subscription.workspacePath) !== path.resolve(thread.workspacePath)) continue
+    subscription.socket.write(JSON.stringify({
+      type: "catalog",
+      subscriptionId: subscription.id,
+      workspacePath: subscription.workspacePath,
+      cursor,
+      thread,
+    }) + "\n")
+  }
 }
 
 const server = createServer((socket) => {
@@ -37,12 +60,35 @@ const server = createServer((socket) => {
       const ok = (result) => socket.write(JSON.stringify({ id: request.id, ok: true, result }) + "\n")
       if (request.method === "protocol.handshake") ok({ protocolVersion: 1, buildId, minimumClientVersion: "0.0.0" })
       else if (request.method === "auth.snapshot") ok({ state: "signed_in" })
-      else if (request.method === "engine.threads.list") ok([...threads.values()])
+      else if (request.method === "engine.threads.list") ok([...threads.values()].map(summary))
       else if (request.method === "engine.conversation.get") ok(threads.get(request.params.threadId)?.conversation ?? [])
-      else if (request.method === "events.subscribe") {
+      else if (request.method === "engine.conversation.snapshot") {
+        const thread = threads.get(request.params.threadId)
+        ok({ items: thread?.conversation ?? [], lastSequence: thread?.lastSequence ?? 0 })
+      } else if (request.method === "catalog.subscribe") {
+        const id = randomUUID()
+        catalogSubscriptions.set(id, { id, socket, workspacePath: request.params.workspacePath })
+        ok({
+          subscriptionId: id,
+          snapshot: {
+            cursor: catalogCursor,
+            threads: [...threads.values()]
+              .filter((thread) => path.resolve(thread.workspacePath) === path.resolve(request.params.workspacePath))
+              .map(summary),
+          },
+        })
+      } else if (request.method === "catalog.unsubscribe") {
+        catalogSubscriptions.delete(request.params.subscriptionId)
+        ok({ unsubscribed: true })
+      } else if (request.method === "events.subscribe") {
         const id = randomUUID()
         subscriptions.set(request.params.threadId, { id, socket })
         ok({ subscribed: true, subscriptionId: id, replay: [], cursor: 0, active: false })
+      } else if (request.method === "events.unsubscribe") {
+        for (const [threadId, subscription] of subscriptions) {
+          if (subscription.id === request.params.subscriptionId) subscriptions.delete(threadId)
+        }
+        ok({ unsubscribed: true })
       } else if (request.method === "engine.attachment.put") {
         const sha256 = createHash("sha256").update(request.params.base64).digest("hex")
         ok({ attachmentId: `sha256:${sha256}`, sha256, bytes: Buffer.from(request.params.base64, "base64").length, mimeType: request.params.mimeType, durable: true })
@@ -54,6 +100,7 @@ const server = createServer((socket) => {
         threads.set(threadId, summary)
         if (process.env.W1_FIXTURE_RECEIVED) writeFileSync(process.env.W1_FIXTURE_RECEIVED, JSON.stringify(request.params))
         ok({ accepted: true, durable: true, eventId: submitted.eventId, threadId, turnId, sequence: submitted.sequence })
+        pushCatalog(summary)
         push(threadId, submitted)
         push(threadId, event(threadId, turnId, "worker.event", { tag: "EVT", payload: { t: "task_state", items: [{ id: "t1", title: "Inspect runtime", status: "in_progress" }] } }))
         push(threadId, event(threadId, turnId, "worker.event", { tag: "EVT", payload: { t: "action", tool: "read", toolCallId: "call-1", input: { path: "README.md" } } }))
@@ -68,6 +115,7 @@ const server = createServer((socket) => {
           { eventId: completed.eventId, threadId, turnId, sequence: completed.sequence, at: completed.at, kind: "assistant.message", role: "assistant", text: completed.data.payload.summary, status: "model_finished" },
         ]
         push(threadId, completed)
+        pushCatalog(summary)
       } else if (request.method === "turn.respond" || request.method === "turn.stop") ok({ delivered: true, stopped: true })
       else ok({})
     }
