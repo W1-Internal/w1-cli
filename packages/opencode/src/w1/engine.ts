@@ -200,7 +200,7 @@ export class EngineClient {
     return () => this.disconnectListeners.delete(listener)
   }
 
-  async connect(input: { location: EngineLocation; clientVersion: string; timeoutMs?: number }) {
+  async connect(input: { location: EngineLocation; clientVersion: string; timeoutMs?: number }): Promise<void> {
     if (this.connected) return
     try {
       await this.open(Math.min(input.timeoutMs ?? 2_000, 2_000))
