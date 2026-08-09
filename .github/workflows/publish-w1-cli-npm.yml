@@ -137,7 +137,8 @@ jobs:
           test -s "$win/bin/w1-runtime/run-stream.mjs"
           test -s "$mac/assets/skills/security/SKILL.md"
           test -s "$win/assets/skills/security/SKILL.md"
-          "$mac/bin/w1" --version
+          file "$mac/bin/w1" | grep -q 'Mach-O 64-bit arm64 executable'
+          file "$win/bin/w1.exe" | grep -Eq 'PE32\+ executable.*x86-64'
           mkdir -p dist/npm-packed
           for package in dist/npm/w1-cli-* dist/npm/w1-cli; do
             npm pack "$package" --pack-destination dist/npm-packed --json >/dev/null
