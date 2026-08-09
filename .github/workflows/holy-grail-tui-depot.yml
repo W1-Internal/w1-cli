@@ -19,7 +19,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: W1-Internal/w1
-          ref: a893edf832e8aa4a41d3aa78c3f8057818727fca
+          ref: 31f4106d8ef1ec4ae6db6667e1991a7a10ea11cb
           path: .w1-engine-source
           persist-credentials: false
 
