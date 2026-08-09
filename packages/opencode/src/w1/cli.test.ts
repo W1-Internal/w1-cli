@@ -4,6 +4,37 @@ import path from "path"
 import os from "os"
 import * as Pty from "@opencode-ai/core/pty/pty.bun"
 import { createW1Attachments } from "./attachments"
+import { separatorRows } from "@/cli/cmd/run/scrollback.writer"
+import type { StreamCommit } from "@/cli/cmd/run/types"
+
+test("W1 tool activity stays attached to narration and its result", () => {
+  const narration: StreamCommit = {
+    kind: "assistant",
+    text: "I will inspect the file.",
+    phase: "progress",
+    source: "assistant",
+    partID: "assistant-1",
+  }
+  const call = {
+    kind: "system",
+    text: "   ● read {\"path\":\"README.md\"}",
+    phase: "final",
+    source: "system",
+    partID: "tool-call-1",
+    compact: true,
+  } as StreamCommit
+  const result = {
+    kind: "system",
+    text: "      └─ ✓ line one",
+    phase: "final",
+    source: "system",
+    partID: "tool-result-1",
+    compact: true,
+  } as StreamCommit
+
+  expect(separatorRows(narration, call)).toBe(0)
+  expect(separatorRows(call, result)).toBe(0)
+})
 
 test("the W1 command completes a streamed turn through the real stdio adapter", async () => {
   const root = (await Bun.$`mktemp -d ${path.join(os.tmpdir(), "w1-cli-command.XXXXXX")}`.text()).trim()
@@ -202,6 +233,9 @@ test.skipIf(process.platform === "win32")("interactive W1 uses the product TUI a
     const exitCode = await Promise.race([exited.promise, Bun.sleep(3_000).then(() => -1)])
     if (exitCode === -1) child.kill("SIGKILL")
     expect(exitCode, output).toBe(0)
+    expect(output).toContain("w1 --session ")
+    expect(output).not.toContain("opencode --mini -s")
+    expect(output).not.toContain("✓aAudit task 1")
   } finally {
     await Bun.$`rm -rf ${root}`
   }
