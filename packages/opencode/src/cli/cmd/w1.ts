@@ -36,6 +36,7 @@ type Args = {
   verbose?: boolean
   fullAccess?: boolean
   yolo?: boolean
+  plain?: boolean
 }
 
 export const W1Command = cmd<{}, Args>({
@@ -58,6 +59,11 @@ export const W1Command = cmd<{}, Args>({
         type: "boolean",
         default: false,
         describe: "allow every tool without approval prompts (alias for --full-access)",
+      })
+      .option("plain", {
+        type: "boolean",
+        default: false,
+        describe: "use the basic line-oriented interface instead of the W1 TUI",
       }),
   handler: async (args) => {
     const directory = path.resolve(args.project ?? process.cwd())
@@ -90,6 +96,19 @@ export const W1Command = cmd<{}, Args>({
     }
 
     const fullAccess = Boolean(args.fullAccess || args.yolo)
+    if (!initialPrompt && process.stdin.isTTY && !args.plain) {
+      const { runW1Tui } = await import("@/w1/tui")
+      await runW1Tui({
+        directory,
+        threadID: args.session?.trim() || `cli-${randomUUID()}`,
+        first: !args.session,
+        model: args.model,
+        fullAccess,
+        images: args.image ?? [],
+        verbose: Boolean(args.verbose),
+      })
+      return
+    }
     const readline = createInterface({ input: process.stdin, output: process.stdout })
     const state = {
       directory,

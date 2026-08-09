@@ -49,6 +49,7 @@ import type {
   RunDiffStyle,
   RunInput,
   RunPrompt,
+  RunPromptPaste,
   RunProvider,
   RunResource,
   RunTuiConfig,
@@ -111,6 +112,8 @@ type RunFooterViewProps = {
   onStatus: (text: string) => void
   onSubagentSelect?: (sessionID: string | undefined) => void
   onQueuedRemove: (messageID: string) => Promise<boolean>
+  onPasteAttachment?: (text: string) => Promise<RunPromptPaste | undefined>
+  brand?: "w1"
 }
 
 export { TEXTAREA_MIN_ROWS, TEXTAREA_MAX_ROWS } from "./footer.prompt"
@@ -379,6 +382,8 @@ export function RunFooterView(props: RunFooterViewProps) {
     onSkillMenu: openSkillMenu,
     onRows: props.onRows,
     onStatus: props.onStatus,
+    onPasteAttachment: props.onPasteAttachment,
+    maxRows: props.brand === "w1" ? 2 : undefined,
   })
   const shell = createMemo(() => prompt() && composer.shell())
   const menu = createMemo(() => prompt() && composer.visible())
@@ -388,7 +393,7 @@ export function RunFooterView(props: RunFooterViewProps) {
       return "EXIT"
     }
 
-    return shell() ? "SHELL" : "BUILD"
+    return shell() ? "SHELL" : props.brand === "w1" ? "W1" : "BUILD"
   })
   const modeColor = createMemo(() => {
     if (exiting()) {
@@ -417,11 +422,10 @@ export function RunFooterView(props: RunFooterViewProps) {
     return shell() ? "Shell mode" : ""
   })
   const activityMeta = createMemo(() => {
-    if (!responsive().statusline.showActivityMeta || usage().length === 0) {
+    if (!responsive().statusline.showActivityMeta) {
       return ""
     }
-
-    return usage()
+    return [props.state().duration, usage()].filter(Boolean).join(" · ")
   })
   const modelStatus = createMemo(() => {
     const current = props.currentModel()
@@ -467,7 +471,7 @@ export function RunFooterView(props: RunFooterViewProps) {
       items.push({ kind: "queued", key: queuedShortcut(), label: `${queue()} queued` })
     }
     if (activeTabs().length > 0 && subagentShortcut()) {
-      items.push({ kind: "subagents", key: subagentShortcut(), label: "subagents" })
+      items.push({ kind: "subagents", key: subagentShortcut(), label: "tools / agents" })
     }
 
     const limit = responsive().statusline.contextHintLimit
@@ -541,7 +545,7 @@ export function RunFooterView(props: RunFooterViewProps) {
     commands: [
       {
         name: "session.child.first",
-        title: "View subagents",
+        title: "View tools / agents",
         category: "Session",
         run: openSubagentMenu,
       },
@@ -639,6 +643,30 @@ export function RunFooterView(props: RunFooterViewProps) {
         when={inspecting()}
         fallback={
           <box width="100%" flexDirection="column" gap={0}>
+            <Show when={active().type === "prompt" && route().type === "composer" && props.state().tasks.length > 0}>
+              <box
+                width="100%"
+                flexDirection="column"
+                paddingLeft={1}
+                paddingRight={2}
+                border={["bottom"]}
+                borderColor={theme().line}
+                backgroundColor={runTheme().background}
+              >
+                <text fg={theme().muted} wrapMode="none">Tasks</text>
+                <For each={props.state().tasks.slice(0, 4)}>
+                  {(task) => (
+                    <text
+                      fg={task.status === "in_progress" ? theme().highlight : theme().muted}
+                      wrapMode="none"
+                      truncate
+                    >
+                      {task.status === "completed" ? "✓" : task.status === "in_progress" ? "●" : "○"} {task.title}
+                    </text>
+                  )}
+                </For>
+              </box>
+            </Show>
             <For each={[promptView()]}>
               {() => (
                 <box
@@ -675,6 +703,8 @@ export function RunFooterView(props: RunFooterViewProps) {
                             onSubmit={composer.onSubmit}
                             onKeyDown={composer.onKeyDown}
                             onContentChange={composer.onContentChange}
+                            onPaste={composer.onPaste}
+                            maxRows={props.brand === "w1" ? 2 : undefined}
                             bind={composer.bind}
                           />
                         </Match>

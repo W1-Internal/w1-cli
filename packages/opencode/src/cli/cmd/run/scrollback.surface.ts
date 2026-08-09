@@ -178,7 +178,7 @@ export class RunScrollbackStream {
               width: "100%",
               streaming: true,
               internalBlockMode: "top-level",
-              tableOptions: { widthMode: "content" },
+              tableOptions: { widthMode: "content", style: "grid" },
               fg: entryColor(commit, this.theme),
               treeSitterClient: this.treeSitterClient,
             })

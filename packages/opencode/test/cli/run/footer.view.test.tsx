@@ -147,6 +147,7 @@ function footerState(input: Partial<FooterState> = {}) {
     first: false,
     interrupt: 0,
     exit: 0,
+    tasks: [],
     ...input,
   })[0]
 }
@@ -950,6 +951,7 @@ test("direct footer shows editable prompts and additional queued work while runn
     first: false,
     interrupt: 0,
     exit: 0,
+    tasks: [],
   })
   const [view] = createSignal<FooterView>({ type: "prompt" })
   const [subagents] = createSignal<FooterSubagentState>({

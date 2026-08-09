@@ -369,7 +369,7 @@ export function RunCommandMenuBody(props: {
             {
               action: "subagent" as const,
               category: "Session",
-              display: "View subagents",
+              display: "View tools / agents",
               footer:
                 activeSubagentCount() > 0 ? `${activeSubagentCount()} active` : `${props.subagents().length} recent`,
               keywords: props
@@ -587,10 +587,10 @@ export function RunSubagentSelectBody(props: {
     props.tabs().map((item) => {
       const title = item.description || item.title || item.label
       return {
-        category: "",
+        category: item.kind === "tool" ? "Tool" : "Agent",
         display: title,
         description: title === item.label ? undefined : item.label,
-        footer: subagentStatusLabel(item.status),
+        footer: `${item.kind === "tool" ? "tool" : "agent"} · ${subagentStatusLabel(item.status)}`,
         keywords: `${item.label} ${item.description} ${item.title ?? ""} ${item.status}`,
         sessionID: item.sessionID,
         current: props.current() === item.sessionID,
@@ -644,7 +644,7 @@ export function RunSubagentSelectBody(props: {
 
   return (
     <PanelShell
-      title="Select subagent"
+      title="Tools / Agents"
       query={query()}
       count={items().length}
       total={entries().length}
@@ -664,7 +664,7 @@ export function RunSubagentSelectBody(props: {
         offset={menu.offset}
         rows={menu.rows}
         limit={SUBAGENT_LIST_ROWS}
-        empty="No subagents found"
+        empty="No tools or agents found"
         border={false}
         paddingLeft={PANEL_PAD}
         paddingRight={PANEL_PAD}

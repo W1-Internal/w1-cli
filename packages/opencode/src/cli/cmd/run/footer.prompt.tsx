@@ -6,7 +6,15 @@
 // composer while the footer view renders any active menus below it.
 /** @jsxImportSource @opentui/solid */
 import { pathToFileURL } from "bun"
-import { StyledText, fg, type ColorInput, type KeyEvent, type TextareaRenderable } from "@opentui/core"
+import {
+  StyledText,
+  decodePasteBytes,
+  fg,
+  type ColorInput,
+  type KeyEvent,
+  type PasteEvent,
+  type TextareaRenderable,
+} from "@opentui/core"
 import { useRenderer } from "@opentui/solid"
 import { normalizePromptContent } from "@opencode-ai/tui/editor"
 import fuzzysort from "fuzzysort"
@@ -27,7 +35,17 @@ import { OPENCODE_BASE_MODE, useBindings } from "@opencode-ai/tui/keymap"
 import { realignEditorPromptParts, resolveEditorSlashValue } from "./prompt.editor"
 import { FOOTER_MENU_ROWS, createFooterMenuState, type RunFooterMenuItem } from "./footer.menu"
 import type { RunFooterTheme } from "./theme"
-import type { FooterState, RunAgent, RunCommand, RunPrompt, RunPromptPart, RunResource, RunTuiConfig } from "./types"
+import type {
+  FooterState,
+  RunAgent,
+  RunCommand,
+  RunPrompt,
+  RunPromptAttachment,
+  RunPromptPaste,
+  RunPromptPart,
+  RunResource,
+  RunTuiConfig,
+} from "./types"
 
 const AUTOCOMPLETE_ROWS = FOOTER_MENU_ROWS
 const AUTOCOMPLETE_BOTTOM_ROWS = 1
@@ -78,6 +96,8 @@ type PromptInput = {
   onSkillMenu: () => void
   onRows: (rows: number) => void
   onStatus: (text: string) => void
+  onPasteAttachment?: (text: string) => Promise<RunPromptPaste | undefined>
+  maxRows?: number
 }
 
 export type PromptState = {
@@ -94,13 +114,11 @@ export type PromptState = {
   openEditor: (input?: { value?: string }) => Promise<void>
   onKeyDown: (event: KeyEvent) => void
   onContentChange: () => void
+  onPaste?: (event: PasteEvent) => void
+  maxRows?: number
   replaceDraft: (text: string) => void
   replacePrompt: (prompt: RunPrompt) => void
   bind: (area?: TextareaRenderable) => void
-}
-
-function clamp(rows: number): number {
-  return Math.max(TEXTAREA_MIN_ROWS, Math.min(TEXTAREA_MAX_ROWS, rows))
 }
 
 function clonePrompt(prompt: RunPrompt): RunPrompt {
@@ -255,7 +273,7 @@ export function RunPromptBody(props: {
         <textarea
           width="100%"
           minHeight={TEXTAREA_MIN_ROWS}
-          maxHeight={TEXTAREA_MAX_ROWS}
+          maxHeight={props.maxRows ?? TEXTAREA_MAX_ROWS}
           wrapMode="word"
           placeholder={props.placeholder()}
           placeholderColor={props.theme().muted}
@@ -263,11 +281,12 @@ export function RunPromptBody(props: {
           focusedTextColor={props.theme().text}
           backgroundColor={props.background()}
           focusedBackgroundColor={props.background()}
-          cursorColor={props.theme().text}
+          cursorColor={props.theme().highlight}
           onSubmit={props.onSubmit}
           onKeyDown={props.onKeyDown}
-          onPaste={() => {
+          onPaste={(event) => {
             refreshPasteLayout()
+            props.onPaste?.(event)
           }}
           onContentChange={props.onContentChange}
           ref={(next) => {
@@ -488,7 +507,7 @@ export function createPromptState(input: PromptInput): PromptState {
       return
     }
 
-    input.onRows(clamp(Math.max(area.lineCount, area.virtualLineCount)) + popup())
+    input.onRows(Math.max(TEXTAREA_MIN_ROWS, Math.min(input.maxRows ?? TEXTAREA_MAX_ROWS, Math.max(area.lineCount, area.virtualLineCount))) + popup())
   }
 
   const scheduleRows = () => {
@@ -947,6 +966,55 @@ export function createPromptState(input: PromptInput): PromptState {
     area.focus()
   }
 
+  const attach = (attachment: RunPromptAttachment) => {
+    if (!area || area.isDestroyed) return
+    const count = parts.filter((item) => item.type === "file" && item.mime.startsWith("image/")).length + 1
+    const placeholder = attachment.placeholder ?? `[Image ${count}]`
+    const start = area.cursorOffset
+    area.insertText(`${placeholder} `)
+    const end = start + Bun.stringWidth(placeholder)
+    const part = structuredClone(attachment.part)
+    if (part.source?.text) {
+      part.source.text.start = start
+      part.source.text.end = end
+      part.source.text.value = placeholder
+    }
+    const id = area.extmarks.create({ start, end, virtual: true, typeId: type })
+    marks.set(id, parts.length)
+    parts.push(part)
+    syncDraft()
+    scheduleRows()
+    area.focus()
+  }
+
+  const paste = (text: string, fallback = text) => {
+    if (!input.onPasteAttachment || !area || area.isDestroyed) return
+    void input
+      .onPasteAttachment(text)
+      .then((result) => {
+        if (!result) {
+          if (area && !area.isDestroyed && fallback) area.insertText(fallback)
+          return
+        }
+        if ("text" in result) {
+          if (area && !area.isDestroyed) area.insertText(result.text)
+          return
+        }
+        attach(result)
+      })
+      .catch(() => {
+        if (area && !area.isDestroyed && fallback) area.insertText(fallback)
+        input.onStatus("could not attach image")
+      })
+  }
+
+  const onPaste = (event: PasteEvent) => {
+    if (!input.onPasteAttachment || !area || area.isDestroyed) return
+    const text = decodePasteBytes(event.bytes).replace(/\r\n/g, "\n").replace(/\r/g, "\n")
+    event.preventDefault()
+    paste(text)
+  }
+
   const expand = () => {
     const next = options()[menu.selected()]
     if (!next || next.kind !== "mention" || !next.directory || !area || area.isDestroyed) {
@@ -990,6 +1058,24 @@ export function createPromptState(input: PromptInput): PromptState {
       },
     ],
     bindings: input.tuiConfig.keybinds.get("prompt.clear"),
+  }))
+
+  useBindings(() => ({
+    mode: OPENCODE_BASE_MODE,
+    enabled: input.prompt(),
+    commands: [
+      {
+        name: "prompt.paste",
+        title: "Paste from clipboard",
+        category: "Prompt",
+        run(ctx: { event: KeyEvent }) {
+          if (!input.onPasteAttachment) return false
+          ctx.event.preventDefault()
+          paste("", "")
+        },
+      },
+    ],
+    bindings: input.tuiConfig.keybinds.get("prompt.paste"),
   }))
 
   useBindings(() => ({
@@ -1299,6 +1385,7 @@ export function createPromptState(input: PromptInput): PromptState {
       refresh()
       scheduleRows()
     },
+    onPaste,
     replaceDraft,
     replacePrompt: restore,
     bind,
