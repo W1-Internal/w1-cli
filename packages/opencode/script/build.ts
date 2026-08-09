@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import { $ } from "bun"
+import { existsSync } from "node:fs"
 import path from "path"
 import { fileURLToPath } from "url"
 
@@ -30,7 +31,15 @@ const w1RuntimeRoot = path.resolve(
 )
 const w1RuntimeEntrypoint = path.join(w1RuntimeRoot, "run-stream.mjs")
 const w1EngineEntrypoint = path.join(w1RuntimeRoot, "w1-engine.mjs")
+const w1EngineClientEntrypoint = path.join(w1RuntimeRoot, "w1-engine-client.mjs")
 const w1EngineBuildFile = path.join(w1RuntimeRoot, "BUILD_ID")
+const w1RuntimeAssetsRoot = path.resolve(
+  process.env.W1_RUNTIME_ASSETS_DIR ?? path.join(w1RuntimeRoot, "..", "..", "assets"),
+)
+const w1SkillsRoot = path.join(w1RuntimeAssetsRoot, "skills")
+const w1PluginsRoot = path.join(w1RuntimeAssetsRoot, "plugins")
+const w1FontsRoot = path.join(w1RuntimeRoot, "standard_fonts")
+const w1NativeDependenciesRoot = path.join(w1RuntimeRoot, "node_modules", "@napi-rs")
 const w1BuildID = (await $`git rev-parse HEAD`.text()).trim()
 const w1BuildDirty = (await $`git status --porcelain`.text()).trim().length > 0
 if (!(await Bun.file(w1RuntimeEntrypoint).exists())) {
@@ -39,8 +48,14 @@ if (!(await Bun.file(w1RuntimeEntrypoint).exists())) {
 if (!(await Bun.file(w1EngineEntrypoint).exists())) {
   throw new Error(`W1 Engine bundle is missing: ${w1EngineEntrypoint}`)
 }
+if (!(await Bun.file(w1EngineClientEntrypoint).exists())) {
+  throw new Error(`W1 Engine client bundle is missing: ${w1EngineClientEntrypoint}`)
+}
 if (!(await Bun.file(w1EngineBuildFile).exists())) {
   throw new Error(`W1 Engine build stamp is missing: ${w1EngineBuildFile}`)
+}
+for (const required of [w1SkillsRoot, w1PluginsRoot, w1FontsRoot, w1NativeDependenciesRoot]) {
+  if (!existsSync(required)) throw new Error(`W1 runtime directory is missing: ${required}`)
 }
 
 const createEmbeddedWebUIBundle = async () => {
@@ -224,10 +239,14 @@ for (const item of targets) {
   await $`mkdir -p dist/${name}/bin/w1-runtime`
   await $`cp ${w1RuntimeEntrypoint} dist/${name}/bin/w1-runtime/run-stream.mjs`
   await $`cp ${w1EngineEntrypoint} dist/${name}/bin/w1-runtime/w1-engine.mjs`
+  await $`cp ${w1EngineClientEntrypoint} dist/${name}/bin/w1-runtime/w1-engine-client.mjs`
   await $`cp ${w1EngineBuildFile} dist/${name}/bin/w1-runtime/BUILD_ID`
-  if (await Bun.file(path.join(w1RuntimeRoot, "standard_fonts", "LICENSE_FOXIT")).exists()) {
-    await $`cp -R ${path.join(w1RuntimeRoot, "standard_fonts")} dist/${name}/bin/w1-runtime/standard_fonts`
-  }
+  await $`cp -R ${w1FontsRoot} dist/${name}/bin/w1-runtime/standard_fonts`
+  await $`mkdir -p dist/${name}/bin/w1-runtime/node_modules`
+  await $`cp -R ${w1NativeDependenciesRoot} dist/${name}/bin/w1-runtime/node_modules/@napi-rs`
+  await $`mkdir -p dist/${name}/assets`
+  await $`cp -R ${w1SkillsRoot} dist/${name}/assets/skills`
+  await $`cp -R ${w1PluginsRoot} dist/${name}/assets/plugins`
 
   // Smoke test: only run if binary is for current platform
   if (item.os === process.platform && item.arch === process.arch && !item.abi) {

@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
-import { chmod, cp, mkdir, readFile, readdir, rm, stat, writeFile } from "fs/promises"
+import { createHash } from "node:crypto"
+import { chmod, cp, lstat, mkdir, readFile, readdir, rm, stat, writeFile } from "fs/promises"
 import path from "path"
 import { fileURLToPath } from "url"
 
@@ -21,7 +22,11 @@ type Options = {
   dist: string
   output: string
   allowPublicRuntime?: boolean
+  cliRef?: string
+  harnessRef?: string
 }
+
+const exactRef = /^[0-9a-f]{40}$/
 
 function argument(name: string) {
   const prefix = `--${name}=`
@@ -38,6 +43,32 @@ async function regularFile(target: string) {
     .catch(() => false)
 }
 
+async function requiredDirectory(target: string) {
+  const info = await stat(target).catch(() => undefined)
+  return info?.isDirectory() === true && (await readdir(target)).length > 0
+}
+
+async function filesBelow(root: string, relative = ""): Promise<string[]> {
+  const target = path.join(root, relative)
+  const entries = await readdir(target, { withFileTypes: true })
+  const files: string[] = []
+  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+    const child = path.posix.join(relative.replaceAll(path.sep, "/"), entry.name)
+    const absolute = path.join(root, child)
+    const info = await lstat(absolute)
+    if (info.isSymbolicLink()) throw new Error(`Refusing to package symbolic link: ${child}`)
+    if (info.isDirectory()) files.push(...(await filesBelow(root, child)))
+    else if (info.isFile()) files.push(child)
+    else throw new Error(`Refusing to package non-regular runtime entry: ${child}`)
+  }
+  return files
+}
+
+async function hashRecord(root: string, relative: string) {
+  const bytes = await readFile(path.join(root, relative))
+  return { sha256: createHash("sha256").update(bytes).digest("hex"), bytes: bytes.byteLength }
+}
+
 export async function stageW1NpmPackages(options: Options) {
   if (!options.allowPublicRuntime) {
     throw new Error(
@@ -47,6 +78,10 @@ export async function stageW1NpmPackages(options: Options) {
   }
   const dist = path.resolve(options.dist)
   const output = path.resolve(options.output)
+  const cliRef = options.cliRef?.trim()
+  const harnessRef = options.harnessRef?.trim()
+  if (!cliRef || !exactRef.test(cliRef)) throw new Error("W1 npm staging requires an exact 40-character CLI ref.")
+  if (!harnessRef || !exactRef.test(harnessRef)) throw new Error("W1 npm staging requires an exact 40-character harness ref.")
   const entries = await readdir(dist, { withFileTypes: true })
   const names = entries
     .filter((entry) => entry.isDirectory() && packagePattern.test(entry.name))
@@ -65,9 +100,28 @@ export async function stageW1NpmPackages(options: Options) {
       throw new Error(`Incomplete W1 native package manifest: ${name}`)
     }
     const executable = path.join(source, "bin", name.includes("-windows-") ? "w1.exe" : "w1")
-    const runtime = path.join(source, "bin", "w1-runtime", "run-stream.mjs")
+    const runtimeRoot = path.join(source, "bin", "w1-runtime")
+    const runtime = path.join(runtimeRoot, "run-stream.mjs")
+    const engine = path.join(runtimeRoot, "w1-engine.mjs")
+    const engineClient = path.join(runtimeRoot, "w1-engine-client.mjs")
+    const buildFile = path.join(runtimeRoot, "BUILD_ID")
     if (!(await regularFile(executable))) throw new Error(`${name} is missing its native W1 executable`)
     if (!(await regularFile(runtime))) throw new Error(`${name} is missing bin/w1-runtime/run-stream.mjs`)
+    if (!(await regularFile(engine))) throw new Error(`${name} is missing bin/w1-runtime/w1-engine.mjs`)
+    if (!(await regularFile(engineClient))) throw new Error(`${name} is missing bin/w1-runtime/w1-engine-client.mjs`)
+    if (!(await regularFile(buildFile))) throw new Error(`${name} is missing bin/w1-runtime/BUILD_ID`)
+    const engineBuildId = (await readFile(buildFile, "utf8")).trim()
+    if (engineBuildId !== harnessRef) {
+      throw new Error(`${name} engine build ${engineBuildId || "<empty>"} does not match harness ref ${harnessRef}`)
+    }
+    for (const required of [
+      path.join(source, "assets", "skills"),
+      path.join(source, "assets", "plugins"),
+      path.join(runtimeRoot, "standard_fonts"),
+      path.join(runtimeRoot, "node_modules", "@napi-rs"),
+    ]) {
+      if (!(await requiredDirectory(required))) throw new Error(`${name} is missing required runtime directory ${path.relative(source, required)}`)
+    }
     manifests.push(manifest)
   }
 
@@ -87,6 +141,43 @@ export async function stageW1NpmPackages(options: Options) {
     const executable = path.join(target, "bin", manifest.name.includes("-windows-") ? "w1.exe" : "w1")
     if (!manifest.name.includes("-windows-")) await chmod(executable, 0o755)
     await writeFile(path.join(target, "LICENSE"), license)
+    const engineBuildId = (await readFile(path.join(target, "bin", "w1-runtime", "BUILD_ID"), "utf8")).trim()
+    const runtimeFiles = [
+      ...(await filesBelow(target, "bin")),
+      ...(await filesBelow(target, "assets")),
+    ].sort()
+    const files = Object.fromEntries(await Promise.all(runtimeFiles.map(async (relative) => [relative, await hashRecord(target, relative)])))
+    await writeFile(
+      path.join(target, "w1-runtime-manifest.json"),
+      JSON.stringify(
+        {
+          schemaVersion: 1,
+          package: {
+            name: manifest.name,
+            version: manifest.version,
+            platform: manifest.os[0],
+            arch: manifest.cpu[0],
+          },
+          protocol: { engine: 1, worker: "w1-stdio-v1" },
+          build: { cli: cliRef, engine: engineBuildId, harnessRef },
+          entrypoints: {
+            cli: `bin/${manifest.name.includes("-windows-") ? "w1.exe" : "w1"}`,
+            engine: "bin/w1-runtime/w1-engine.mjs",
+            engineClient: "bin/w1-runtime/w1-engine-client.mjs",
+            worker: "bin/w1-runtime/run-stream.mjs",
+          },
+          files,
+          assets: {
+            skills: "assets/skills",
+            plugins: "assets/plugins",
+            fonts: "bin/w1-runtime/standard_fonts",
+            nativeDependencies: "bin/w1-runtime/node_modules/@napi-rs",
+          },
+        },
+        null,
+        2,
+      ) + "\n",
+    )
     await writeFile(
       path.join(target, "package.json"),
       JSON.stringify(
@@ -96,7 +187,7 @@ export async function stageW1NpmPackages(options: Options) {
           license: "MIT",
           repository: { type: "git", url: "git+https://github.com/W1-Internal/w1-cli.git" },
           homepage: "https://w1lab.com",
-          files: ["bin", "LICENSE"],
+          files: ["bin", "assets", "w1-runtime-manifest.json", "LICENSE"],
           publishConfig: { access: "public", tag: "next", provenance: true },
         },
         null,
@@ -144,6 +235,8 @@ if (import.meta.main) {
     dist,
     output,
     allowPublicRuntime: process.env.W1_NPM_ALLOW_PUBLIC_RUNTIME === "1",
+    cliRef: process.env.W1_CLI_REF,
+    harnessRef: process.env.W1_HARNESS_REF,
   })
   console.log(JSON.stringify(result))
 }

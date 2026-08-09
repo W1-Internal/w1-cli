@@ -9,19 +9,24 @@ import { pathToFileURL } from "url"
 import { W1Command } from "./cli/cmd/w1"
 import { DoctorCommand } from "./cli/cmd/doctor"
 import { AuthCommand, LoginCommand, LogoutCommand } from "./cli/cmd/w1-auth"
+import { EngineCommand } from "./cli/cmd/w1-engine"
 
 const args = hideBin(process.argv)
 
 if (args[0] === "__runtime") {
   const runtimePath = args[1]
   if (!runtimePath) throw new Error("W1 runtime path is missing.")
+  process.argv = [process.execPath, runtimePath, "--serve"]
   const runtime = (await import(pathToFileURL(runtimePath).href)) as {
     serve?: () => Promise<void>
     installRuntimeSignalHandlers?: () => () => void
   }
-  if (!runtime.serve) throw new Error("Bundled W1 runtime does not export serve().")
-  const removeSignalHandlers = runtime.installRuntimeSignalHandlers?.()
-  await runtime.serve().finally(() => removeSignalHandlers?.())
+  if (runtime.serve) {
+    const removeSignalHandlers = runtime.installRuntimeSignalHandlers?.()
+    await runtime.serve().finally(() => removeSignalHandlers?.())
+  } else {
+    await new Promise<void>((resolve) => process.stdin.once("close", resolve))
+  }
   process.exit(0)
 }
 
@@ -60,6 +65,7 @@ const cli = yargs(args)
   .command(LoginCommand)
   .command(LogoutCommand)
   .command(DoctorCommand)
+  .command(EngineCommand)
   .command(W1Command)
   .fail((msg, err) => {
     if (

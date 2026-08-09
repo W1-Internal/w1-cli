@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 const childProcess = require("child_process")
+const crypto = require("crypto")
 const fs = require("fs")
 const os = require("os")
 const path = require("path")
@@ -79,6 +80,64 @@ function packageCandidates(platform, arch) {
   return [base]
 }
 
+function packageFile(root, relative) {
+  if (!relative || path.isAbsolute(relative) || relative.includes("\\")) throw new Error(`invalid runtime path: ${relative}`)
+  const target = path.resolve(root, relative)
+  if (target === root || !target.startsWith(root + path.sep)) throw new Error(`runtime path escapes package: ${relative}`)
+  return target
+}
+
+function requireDirectory(root, relative, label) {
+  const target = packageFile(root, relative)
+  const info = fs.lstatSync(target, { throwIfNoEntry: false })
+  if (!info || !info.isDirectory() || fs.readdirSync(target).length === 0) throw new Error(`${label} is missing: ${relative}`)
+}
+
+function validateNativePackage(root, name, platform, arch) {
+  const manifestPath = path.join(root, "w1-runtime-manifest.json")
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"))
+  if (manifest.schemaVersion !== 1) throw new Error("unsupported runtime manifest schema")
+  if (
+    manifest.package?.name !== name ||
+    manifest.package?.version !== meta.version ||
+    manifest.package?.platform !== (platform === "windows" ? "win32" : platform) ||
+    manifest.package?.arch !== arch
+  ) {
+    throw new Error("runtime package identity does not match this installation")
+  }
+  if (manifest.protocol?.engine !== 1 || manifest.protocol?.worker !== "w1-stdio-v1") {
+    throw new Error("runtime package protocol is incompatible")
+  }
+  if (!/^[0-9a-f]{40}$/.test(manifest.build?.cli) || !/^[0-9a-f]{40}$/.test(manifest.build?.harnessRef)) {
+    throw new Error("runtime package build identity is invalid")
+  }
+  const entrypoints = [
+    manifest.entrypoints?.cli,
+    manifest.entrypoints?.engine,
+    manifest.entrypoints?.engineClient,
+    manifest.entrypoints?.worker,
+  ]
+  for (const relative of entrypoints) {
+    if (typeof relative !== "string" || !manifest.files?.[relative]) throw new Error(`runtime entrypoint is unverified: ${relative}`)
+  }
+  for (const [relative, expected] of Object.entries(manifest.files || {})) {
+    if (!/^[0-9a-f]{64}$/.test(expected.sha256) || !Number.isSafeInteger(expected.bytes) || expected.bytes < 0) {
+      throw new Error(`runtime hash record is invalid: ${relative}`)
+    }
+    const target = packageFile(root, relative)
+    const info = fs.lstatSync(target, { throwIfNoEntry: false })
+    if (!info || !info.isFile() || info.isSymbolicLink()) throw new Error(`runtime file is missing: ${relative}`)
+    const bytes = fs.readFileSync(target)
+    const digest = crypto.createHash("sha256").update(bytes).digest("hex")
+    if (bytes.byteLength !== expected.bytes || digest !== expected.sha256) throw new Error(`runtime integrity check failed: ${relative}`)
+  }
+  requireDirectory(root, manifest.assets?.skills, "runtime skills")
+  requireDirectory(root, manifest.assets?.plugins, "runtime plugins")
+  requireDirectory(root, manifest.assets?.fonts, "runtime fonts")
+  requireDirectory(root, manifest.assets?.nativeDependencies, "runtime native dependencies")
+  return packageFile(root, manifest.entrypoints.cli)
+}
+
 function resolveNativePackage() {
   const platform = platformName()
   const arch = architectureName()
@@ -91,10 +150,7 @@ function resolveNativePackage() {
       const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"))
       if (manifest.name !== name || manifest.version !== meta.version) continue
       const root = path.dirname(manifestPath)
-      const executable = path.join(root, "bin", platform === "windows" ? "w1.exe" : "w1")
-      const runtime = path.join(root, "bin", "w1-runtime", "run-stream.mjs")
-      if (!fs.existsSync(executable) || !fs.existsSync(runtime)) continue
-      return executable
+      return validateNativePackage(root, name, platform, arch)
     } catch {
       // Try the next explicitly declared compatible package.
     }
