@@ -1,6 +1,6 @@
 // Entry and exit splash banners for direct interactive mode scrollback.
 //
-// Renders the full opencode entry logo and a compact [O] exit badge, plus
+// Renders the selected product entry logo and a compact exit badge, plus
 // session metadata and the resume command. These are scrollback snapshots, so
 // they become immutable terminal history once committed.
 //
@@ -33,6 +33,7 @@ type SplashWriterInput = SplashInput & {
   theme: RunSplashTheme
   showSession?: boolean
   detail?: string
+  brand?: "w1"
 }
 
 export type SplashMeta = {
@@ -171,30 +172,45 @@ function draw(
   }
 }
 
+function drawMark(
+  lines: Array<{ left: number; top: number; text: string; fg: ColorInput; bg?: ColorInput; attrs?: number }>,
+  input: SplashWriterInput,
+  top: number,
+) {
+  if (input.brand === "w1") {
+    for (let row = 0; row < 3; row += 1) {
+      push(lines, 0, top + row, "     ", input.theme.leftShadow, input.theme.left)
+    }
+    push(lines, 1, top + 1, "W1", input.theme.leftShadow, input.theme.left, TextAttributes.BOLD)
+    return { width: 5, height: 3 }
+  }
+
+  const mark = go.right.slice(1)
+  for (let row = 0; row < mark.length; row += 1) {
+    draw(lines, mark[row] ?? "", {
+      left: 0,
+      top: top + row,
+      fg: input.theme.left,
+      shadow: input.theme.leftShadow,
+    })
+  }
+  return { width: mark[0]?.length ?? 0, height: mark.length }
+}
+
 function build(input: SplashWriterInput, kind: "entry" | "exit", ctx: ScrollbackRenderContext): ScrollbackSnapshot {
   const width = Math.max(1, ctx.width)
   const meta = splashMeta(input)
   const lines: Array<{ left: number; top: number; text: string; fg: ColorInput; bg?: ColorInput; attrs?: number }> = []
   const left = input.theme.left
   const right = input.theme.right
-  const leftShadow = input.theme.leftShadow
   let height = 1
 
   if (kind === "entry") {
-    const mark = go.right.slice(1)
     const top = 1
-    const body_left = (mark[0]?.length ?? 0) + 2
+    const mark = drawMark(lines, input, top)
+    const body_left = mark.width + 2
 
-    for (let i = 0; i < mark.length; i += 1) {
-      draw(lines, mark[i] ?? "", {
-        left: 0,
-        top: top + i,
-        fg: left,
-        shadow: leftShadow,
-      })
-    }
-
-    push(lines, body_left, top, "OpenCode", right, undefined, TextAttributes.BOLD)
+    push(lines, body_left, top, input.brand === "w1" ? "W1" : "OpenCode", right, undefined, TextAttributes.BOLD)
     if (input.detail) {
       push(
         lines,
@@ -205,24 +221,15 @@ function build(input: SplashWriterInput, kind: "entry" | "exit", ctx: Scrollback
         undefined,
       )
     }
-    height = top + mark.length
+    height = top + mark.height
   }
 
   if (kind === "exit") {
-    const mark = go.right.slice(1)
     const top = 1
-    const body_left = (mark[0]?.length ?? 0) + 2
+    const mark = drawMark(lines, input, top)
+    const body_left = mark.width + 2
     const session = "Session  "
     const label = "Continue "
-
-    for (let i = 0; i < mark.length; i += 1) {
-      draw(lines, mark[i] ?? "", {
-        left: 0,
-        top: top + i,
-        fg: left,
-        shadow: leftShadow,
-      })
-    }
 
     if (input.showSession !== false) {
       push(lines, body_left, top, session, left, undefined, TextAttributes.DIM)
@@ -239,7 +246,7 @@ function build(input: SplashWriterInput, kind: "entry" | "exit", ctx: Scrollback
       undefined,
       TextAttributes.BOLD,
     )
-    height = top + mark.length
+    height = top + mark.height
   }
 
   const root = new BoxRenderable(ctx.renderContext, {

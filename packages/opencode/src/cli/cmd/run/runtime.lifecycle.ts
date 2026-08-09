@@ -239,6 +239,7 @@ export async function createRuntimeLifecycle(input: LifecycleInput): Promise<Lif
       entrySplash({
         ...meta,
         theme: theme.splash,
+        brand: input.brand,
         showSession: splash.showSession,
         detail: directoryLabel(input.directory),
       }),
@@ -359,6 +360,7 @@ export async function createRuntimeLifecycle(input: LifecycleInput): Promise<Lif
                 session_id: sessionID,
               }),
               theme: footer.currentTheme().splash,
+              brand: input.brand,
             }),
           )
           await renderer.idle().catch(() => {})
@@ -416,6 +418,7 @@ export async function createRuntimeLifecycle(input: LifecycleInput): Promise<Lif
               session_id: next.sessionID ?? input.getSessionID?.() ?? input.sessionID,
             }),
             theme: footer.currentTheme().splash,
+            brand: input.brand,
             showSession: splash.showSession,
             detail: directoryLabel(input.directory),
           }),

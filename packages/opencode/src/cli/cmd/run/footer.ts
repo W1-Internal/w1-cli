@@ -735,7 +735,7 @@ export class RunFooter implements FooterApi {
   // get fixed extra rows; the prompt view scales with textarea line count.
   private applyHeight(): void {
     const type = this.view().type
-    const taskRows = this.state().tasks.length ? Math.min(4, this.state().tasks.length) + 1 : 0
+    const taskRows = this.state().tasks.length ? this.state().tasks.length + 1 : 0
     const height =
       type === "permission"
         ? this.base + PERMISSION_ROWS

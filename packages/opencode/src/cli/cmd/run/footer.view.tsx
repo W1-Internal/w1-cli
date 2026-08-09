@@ -735,7 +735,7 @@ export function RunFooterView(props: RunFooterViewProps) {
                 backgroundColor={runTheme().background}
               >
                 <text fg={theme().muted} wrapMode="none">Tasks</text>
-                <For each={props.state().tasks.slice(0, 4)}>
+                <For each={props.state().tasks}>
                   {(task) => (
                     <text
                       fg={task.status === "in_progress" ? theme().highlight : theme().muted}
