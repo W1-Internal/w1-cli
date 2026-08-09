@@ -516,9 +516,11 @@ export async function runW1Tui(input: Input) {
     }
   }
 
-  const replay = async (controller: Controller) => {
+  const replay = async (controller: Controller, reset = true) => {
     if (!lifecycle || !footer) return
-    await lifecycle.resetForReplay({ sessionTitle: controller.title, sessionID: controller.id, history: history(controller.items) })
+    if (reset) {
+      await lifecycle.resetForReplay({ sessionTitle: controller.title, sessionID: controller.id, history: history(controller.items) })
+    }
     controller.tools.clear()
     controller.tabs = { tabs: [], details: {}, permissions: [], questions: [] }
     controller.assistantOpen = false
@@ -785,7 +787,10 @@ export async function runW1Tui(input: Input) {
       footer?.append(system(cause instanceof Error ? cause.message : String(cause), "error"))
     }
   })())
-  await replay(initialController)
+  // The lifecycle already owns the initial session and splash. Resetting a brand-new
+  // OpenTUI footer races terminal startup in compiled hosts; replay resets are only
+  // needed after an actual session switch or engine rehydration.
+  await replay(initialController, false)
 
   elapsedTimer = setInterval(() => {
     const controller = active()
