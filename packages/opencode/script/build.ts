@@ -40,6 +40,7 @@ const w1SkillsRoot = path.join(w1RuntimeAssetsRoot, "skills")
 const w1PluginsRoot = path.join(w1RuntimeAssetsRoot, "plugins")
 const w1FontsRoot = path.join(w1RuntimeRoot, "standard_fonts")
 const w1NativeDependenciesRoot = path.join(w1RuntimeRoot, "node_modules", "@napi-rs")
+const w1CanvasRoot = path.join(w1NativeDependenciesRoot, "canvas")
 const w1BuildID = (await $`git rev-parse HEAD`.text()).trim()
 const w1BuildDirty = (await $`git status --porcelain`.text()).trim().length > 0
 if (!(await Bun.file(w1RuntimeEntrypoint).exists())) {
@@ -54,7 +55,7 @@ if (!(await Bun.file(w1EngineClientEntrypoint).exists())) {
 if (!(await Bun.file(w1EngineBuildFile).exists())) {
   throw new Error(`W1 Engine build stamp is missing: ${w1EngineBuildFile}`)
 }
-for (const required of [w1SkillsRoot, w1PluginsRoot, w1FontsRoot, w1NativeDependenciesRoot]) {
+for (const required of [w1SkillsRoot, w1PluginsRoot, w1FontsRoot, w1CanvasRoot]) {
   if (!existsSync(required)) throw new Error(`W1 runtime directory is missing: ${required}`)
 }
 
@@ -150,7 +151,12 @@ const allTargets: {
 const targets = requestedTarget
   ? allTargets.filter(
       (item) =>
-        [item.os === "win32" ? "windows" : item.os, item.arch, item.avx2 === false ? "baseline" : undefined]
+        [
+          item.os === "win32" ? "windows" : item.os,
+          item.arch,
+          item.avx2 === false ? "baseline" : undefined,
+          item.abi,
+        ]
           .filter(Boolean)
           .join("-") === requestedTarget,
     )
@@ -178,6 +184,12 @@ const targets = requestedTarget
 if (targets.length === 0) throw new Error(`Unknown build target: ${requestedTarget}`)
 
 if (!keepDist) await $`rm -rf dist`
+
+function canvasNativePackage(item: (typeof allTargets)[number]) {
+  if (item.os === "darwin") return `canvas-darwin-${item.arch}`
+  if (item.os === "win32") return `canvas-win32-${item.arch}-msvc`
+  return `canvas-linux-${item.arch}-${item.abi === "musl" ? "musl" : "gnu"}`
+}
 
 const binaries: Record<string, string> = {}
 if (!skipInstall) {
@@ -242,8 +254,12 @@ for (const item of targets) {
   await $`cp ${w1EngineClientEntrypoint} dist/${name}/bin/w1-runtime/w1-engine-client.mjs`
   await $`cp ${w1EngineBuildFile} dist/${name}/bin/w1-runtime/BUILD_ID`
   await $`cp -R ${w1FontsRoot} dist/${name}/bin/w1-runtime/standard_fonts`
-  await $`mkdir -p dist/${name}/bin/w1-runtime/node_modules`
-  await $`cp -R ${w1NativeDependenciesRoot} dist/${name}/bin/w1-runtime/node_modules/@napi-rs`
+  const canvasNativeRoot = path.join(w1NativeDependenciesRoot, canvasNativePackage(item))
+  if (!existsSync(canvasNativeRoot)) {
+    throw new Error(`W1 target-native canvas package is missing for ${name}: ${canvasNativeRoot}`)
+  }
+  await $`mkdir -p dist/${name}/bin/w1-runtime/node_modules/@napi-rs`
+  await $`cp -R ${w1CanvasRoot} ${canvasNativeRoot} dist/${name}/bin/w1-runtime/node_modules/@napi-rs`
   await $`mkdir -p dist/${name}/assets`
   await $`cp -R ${w1SkillsRoot} dist/${name}/assets/skills`
   await $`cp -R ${w1PluginsRoot} dist/${name}/assets/plugins`

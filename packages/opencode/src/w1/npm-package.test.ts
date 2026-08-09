@@ -23,10 +23,24 @@ async function nativeFixture(root: string, name: string, version = "0.2.0", incl
   const windows = name.includes("-windows-")
   const platform = windows ? "win32" : name.includes("-linux-") ? "linux" : "darwin"
   const arch = name.includes("-arm64") ? "arm64" : "x64"
+  const libc = name.endsWith("-musl") ? "musl" : "gnu"
+  const canvasTarget = platform === "darwin"
+    ? `darwin-${arch}`
+    : platform === "win32"
+      ? `win32-${arch}-msvc`
+      : `linux-${arch}-${libc}`
+  const canvasNativePackage = `canvas-${canvasTarget}`
   await mkdir(path.join(target, "bin", "w1-runtime"), { recursive: true })
   await Bun.write(
     path.join(target, "package.json"),
-    JSON.stringify({ name, version, preferUnplugged: true, os: [platform], cpu: [arch] }),
+    JSON.stringify({
+      name,
+      version,
+      preferUnplugged: true,
+      os: [platform],
+      cpu: [arch],
+      ...(platform === "linux" && libc === "musl" ? { libc: ["musl"] } : {}),
+    }),
   )
   await Bun.write(path.join(target, "bin", windows ? "w1.exe" : "w1"), "fixture")
   if (includeRuntime) await Bun.write(path.join(target, "bin", "w1-runtime", "run-stream.mjs"), "fixture runtime")
@@ -35,6 +49,14 @@ async function nativeFixture(root: string, name: string, version = "0.2.0", incl
   await Bun.write(path.join(target, "bin", "w1-runtime", "BUILD_ID"), HARNESS_REF + "\n")
   await Bun.write(path.join(target, "bin", "w1-runtime", "standard_fonts", "LICENSE_FOXIT"), "fixture font")
   await Bun.write(path.join(target, "bin", "w1-runtime", "node_modules", "@napi-rs", "canvas", "package.json"), "{}")
+  await Bun.write(
+    path.join(target, "bin", "w1-runtime", "node_modules", "@napi-rs", canvasNativePackage, "package.json"),
+    JSON.stringify({ name: `@napi-rs/${canvasNativePackage}` }),
+  )
+  await Bun.write(
+    path.join(target, "bin", "w1-runtime", "node_modules", "@napi-rs", canvasNativePackage, `skia.${canvasTarget}.node`),
+    "fixture native binary",
+  )
   await Bun.write(path.join(target, "assets", "skills", "fixture", "SKILL.md"), "# fixture")
   await Bun.write(path.join(target, "assets", "plugins", "fixture", "plugin.json"), "{}")
   return target
@@ -112,6 +134,35 @@ describe("W1 npm package contract", () => {
     await expect(
       stageW1NpmPackages(stageOptions(root)),
     ).rejects.toThrow("missing bin/w1-runtime/run-stream.mjs")
+  })
+
+  test("stages only the exact target-native canvas binary for each artifact", async () => {
+    const root = await temporaryRoot()
+    const packages = [
+      ["w1-cli-darwin-arm64", "canvas-darwin-arm64/skia.darwin-arm64.node"],
+      ["w1-cli-darwin-x64", "canvas-darwin-x64/skia.darwin-x64.node"],
+      ["w1-cli-linux-x64", "canvas-linux-x64-gnu/skia.linux-x64-gnu.node"],
+      ["w1-cli-linux-x64-musl", "canvas-linux-x64-musl/skia.linux-x64-musl.node"],
+    ] as const
+    for (const [name] of packages) await nativeFixture(root, name)
+
+    const output = path.join(root, "staged")
+    await stageW1NpmPackages(stageOptions(root, output))
+    for (const [name, expected] of packages) {
+      const nativeRoot = path.join(output, name, "bin", "w1-runtime", "node_modules", "@napi-rs")
+      const files = await Array.fromAsync(new Bun.Glob("**/*.node").scan({ cwd: nativeRoot }))
+      expect(files.map((file) => file.replaceAll("\\", "/"))).toEqual([expected])
+    }
+  })
+
+  test("rejects a package containing any foreign native binary", async () => {
+    const root = await temporaryRoot()
+    const target = await nativeFixture(root, "w1-cli-darwin-arm64")
+    await Bun.write(
+      path.join(target, "bin", "w1-runtime", "node_modules", "@napi-rs", "canvas-linux-x64-gnu", "skia.linux-x64-gnu.node"),
+      "foreign native binary",
+    )
+    await expect(stageW1NpmPackages(stageOptions(root))).rejects.toThrow("foreign native package")
   })
 
   test("requires an explicit public-runtime exposure decision", async () => {

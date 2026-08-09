@@ -72,6 +72,12 @@ jobs:
         run: |
           npm ci
           npm ci --prefix vscode-extension
+          canvas_version=$(node -p 'require("./node_modules/@napi-rs/canvas/package.json").version')
+          npm install --ignore-scripts --no-save --package-lock=false --force \
+            "@napi-rs/canvas-linux-x64-gnu@$canvas_version" \
+            "@napi-rs/canvas-linux-x64-musl@$canvas_version" \
+            "@napi-rs/canvas-darwin-arm64@$canvas_version" \
+            "@napi-rs/canvas-darwin-x64@$canvas_version"
           npm --prefix vscode-extension run vscode:prepublish
           test -s vscode-extension/out/harness/run-stream.mjs
           test -s vscode-extension/out/harness/w1-engine.mjs
@@ -92,8 +98,14 @@ jobs:
             packages/opencode/src/w1/engine.ts \
             --bundle --platform=node --format=esm --target=node18 \
             --outfile=.w1-harness/vscode-extension/out/harness/w1-engine-client.mjs
-          cp -R .w1-harness/node_modules/@napi-rs/canvas-linux-x64-gnu \
-            .w1-harness/vscode-extension/out/harness/node_modules/@napi-rs/canvas-linux-x64-gnu
+          mkdir -p .w1-harness/vscode-extension/out/harness/node_modules/@napi-rs
+          cp -R \
+            .w1-harness/node_modules/@napi-rs/canvas \
+            .w1-harness/node_modules/@napi-rs/canvas-linux-x64-gnu \
+            .w1-harness/node_modules/@napi-rs/canvas-linux-x64-musl \
+            .w1-harness/node_modules/@napi-rs/canvas-darwin-arm64 \
+            .w1-harness/node_modules/@napi-rs/canvas-darwin-x64 \
+            .w1-harness/vscode-extension/out/harness/node_modules/@napi-rs
           test -s .w1-harness/vscode-extension/out/harness/w1-engine.mjs
           test -s .w1-harness/vscode-extension/out/harness/w1-engine-client.mjs
 
@@ -119,6 +131,7 @@ jobs:
           W1_RUNTIME_BUNDLE_DIR: ${{ github.workspace }}/.w1-harness/vscode-extension/out/harness
         run: |
           bun run script/build.ts --target=linux-x64 --skip-embed-web-ui
+          bun run script/build.ts --target=linux-x64-musl --keep-dist --skip-install --skip-embed-web-ui
           bun run script/build.ts --target=darwin-arm64 --keep-dist --skip-install --skip-embed-web-ui
           bun run script/build.ts --target=darwin-x64 --keep-dist --skip-install --skip-embed-web-ui
           bun run script/build.ts --target=darwin-x64-baseline --keep-dist --skip-install --skip-embed-web-ui
@@ -153,7 +166,7 @@ jobs:
             timeout 90 "$test_root/prefix/node_modules/.bin/w1" "$test_root/project" --plain \
               --prompt "Reply once to confirm the packaged actor is running." >"$test_root/actor.log" 2>&1
           grep -q 'Packaged actor turn passed.' "$test_root/actor.log"
-          rm -rf dist/w1-cli-linux-x64 dist/npm-e2e
+          rm -rf dist/w1-cli-linux-* dist/npm-e2e
 
       - name: Stage fail-closed npm package tree
         working-directory: packages/opencode
@@ -176,6 +189,10 @@ jobs:
           test -s dist/npm/w1-cli-darwin-arm64/w1-runtime-manifest.json
           test -d dist/npm/w1-cli-darwin-arm64/assets/skills
           test -d dist/npm/w1-cli-darwin-arm64/assets/plugins
+          test "$(find dist/npm/w1-cli-darwin-arm64/bin/w1-runtime/node_modules/@napi-rs -name '*.node' -type f | wc -l)" -eq 1
+          test "$(find dist/npm/w1-cli-darwin-x64/bin/w1-runtime/node_modules/@napi-rs -name '*.node' -type f | wc -l)" -eq 1
+          test -s dist/npm/w1-cli-darwin-arm64/bin/w1-runtime/node_modules/@napi-rs/canvas-darwin-arm64/skia.darwin-arm64.node
+          test -s dist/npm/w1-cli-darwin-x64/bin/w1-runtime/node_modules/@napi-rs/canvas-darwin-x64/skia.darwin-x64.node
           file dist/npm/w1-cli-darwin-arm64/bin/w1 | grep -Eq 'Mach-O.*arm64|Mach-O.*ARM64'
           file dist/npm/w1-cli-darwin-x64/bin/w1 | grep -Eq 'Mach-O.*x86_64'
           for package in dist/npm/w1-cli-* dist/npm/w1-cli; do npm pack "$package" --dry-run --json >/dev/null; done

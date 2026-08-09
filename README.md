@@ -37,6 +37,11 @@ plugins, PDF fonts and native canvas dependencies. `w1-runtime-manifest.json` pi
 commits, package/protocol versions, entrypoints, sizes and SHA-256 hashes. Both the npm launcher and
 the compiled CLI fail closed when the manifest is missing, incomplete or tampered.
 
+Native image dependencies are selected per artifact, never inherited from the build host: each
+package contains exactly one canvas binary matching its OS, architecture and Linux libc. Depot also
+builds temporary Linux glibc and musl packages so it can execute the compiled install and validate
+both libc contracts. Those probes are removed before the final Mac-first dogfood artifact is staged.
+
 The shared Engine converges by protocol and release version: an older idle daemon is replaced by the
 new package, an active daemon refuses automatic replacement, and an older CLI can keep using a newer
 compatible daemon. A different build claiming the same package version is treated as an integrity

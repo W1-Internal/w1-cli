@@ -26,6 +26,11 @@ type Options = {
   harnessRef?: string
 }
 
+type CanvasNativeTarget = {
+  packageName: string
+  binarySuffix: string
+}
+
 const exactRef = /^[0-9a-f]{40}$/
 
 function argument(name: string) {
@@ -35,6 +40,23 @@ function argument(name: string) {
 
 function unique(values: string[]) {
   return [...new Set(values)].sort()
+}
+
+function canvasNativeTarget(manifest: NativeManifest): CanvasNativeTarget {
+  const platform = manifest.os[0]
+  const arch = manifest.cpu[0]
+  if (arch !== "arm64" && arch !== "x64") throw new Error(`${manifest.name} has unsupported native architecture ${arch}`)
+  if (platform === "darwin") {
+    return { packageName: `canvas-darwin-${arch}`, binarySuffix: `.darwin-${arch}.node` }
+  }
+  if (platform === "win32") {
+    return { packageName: `canvas-win32-${arch}-msvc`, binarySuffix: `.win32-${arch}-msvc.node` }
+  }
+  if (platform === "linux") {
+    const libc = manifest.libc?.[0] === "musl" ? "musl" : "gnu"
+    return { packageName: `canvas-linux-${arch}-${libc}`, binarySuffix: `.linux-${arch}-${libc}.node` }
+  }
+  throw new Error(`${manifest.name} has unsupported native platform ${platform}`)
 }
 
 async function regularFile(target: string) {
@@ -99,6 +121,9 @@ export async function stageW1NpmPackages(options: Options) {
     if (!manifest.version || manifest.os?.length !== 1 || manifest.cpu?.length !== 1) {
       throw new Error(`Incomplete W1 native package manifest: ${name}`)
     }
+    if (manifest.os[0] === "linux" && name.endsWith("-musl") !== (manifest.libc?.[0] === "musl")) {
+      throw new Error(`${name} has a mismatched Linux libc manifest`)
+    }
     const executable = path.join(source, "bin", name.includes("-windows-") ? "w1.exe" : "w1")
     const runtimeRoot = path.join(source, "bin", "w1-runtime")
     const runtime = path.join(runtimeRoot, "run-stream.mjs")
@@ -121,6 +146,32 @@ export async function stageW1NpmPackages(options: Options) {
       path.join(runtimeRoot, "node_modules", "@napi-rs"),
     ]) {
       if (!(await requiredDirectory(required))) throw new Error(`${name} is missing required runtime directory ${path.relative(source, required)}`)
+    }
+    const nativeDependenciesRoot = path.join(runtimeRoot, "node_modules", "@napi-rs")
+    const expectedNative = canvasNativeTarget(manifest)
+    const nativeEntries = await readdir(nativeDependenciesRoot, { withFileTypes: true })
+    const unexpectedPackages = nativeEntries
+      .filter((entry) => entry.isDirectory() && entry.name !== "canvas" && entry.name !== expectedNative.packageName)
+      .map((entry) => entry.name)
+    if (unexpectedPackages.length) {
+      throw new Error(`${name} contains foreign native package(s): ${unexpectedPackages.join(", ")}`)
+    }
+    const nativePackageRoot = path.join(nativeDependenciesRoot, expectedNative.packageName)
+    if (!(await requiredDirectory(nativePackageRoot))) {
+      throw new Error(`${name} is missing target-native @napi-rs/${expectedNative.packageName}`)
+    }
+    const nativePackageManifest = JSON.parse(await readFile(path.join(nativePackageRoot, "package.json"), "utf8")) as { name?: string }
+    if (nativePackageManifest.name !== `@napi-rs/${expectedNative.packageName}`) {
+      throw new Error(`${name} has an invalid target-native canvas package manifest`)
+    }
+    const nativeFiles = (await filesBelow(nativeDependenciesRoot)).filter((relative) => relative.endsWith(".node"))
+    if (!nativeFiles.length) throw new Error(`${name} is missing its target-native canvas binary`)
+    const foreignNativeFiles = nativeFiles.filter(
+      (relative) =>
+        !relative.startsWith(`${expectedNative.packageName}/`) || !path.posix.basename(relative).endsWith(expectedNative.binarySuffix),
+    )
+    if (foreignNativeFiles.length) {
+      throw new Error(`${name} contains foreign native binary file(s): ${foreignNativeFiles.join(", ")}`)
     }
     manifests.push(manifest)
   }
