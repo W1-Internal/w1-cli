@@ -327,9 +327,20 @@ test.skipIf(!process.env.W1_COMPILED_BINARY || !process.env.W1_COMPILED_ENGINE |
         stdout: "pipe",
         stderr: "pipe",
       })
-      await Bun.sleep(100)
+      let probeOutput = ""
+      const probeReader = runtimeProbe.stdout.getReader()
+      const collectProbeOutput = (async () => {
+        const decoder = new TextDecoder()
+        while (true) {
+          const chunk = await probeReader.read()
+          if (chunk.done) return
+          probeOutput += decoder.decode(chunk.value, { stream: true })
+        }
+      })()
+      await waitFor(() => probeOutput.includes("@@READY@@"))
       runtimeProbe.kill("SIGTERM")
-      const [probeOutput, probeExit] = await Promise.all([new Response(runtimeProbe.stdout).text(), runtimeProbe.exited])
+      const probeExit = await runtimeProbe.exited
+      await collectProbeOutput
       expect(probeExit).toBe(0)
       expect(probeOutput).toContain("@@READY@@")
 
