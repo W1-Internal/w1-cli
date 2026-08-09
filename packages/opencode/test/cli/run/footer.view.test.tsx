@@ -1039,14 +1039,19 @@ test("direct footer shows editable prompts and additional queued work while runn
     const hint = statusItems.at(-1)!
 
     expect(spinner).toBeDefined()
-    expect(frame).toContain("a-model-name-long-enough-to-force-responsive-truncation")
-    expect(frame).toContain("3 queued")
-    expect(frame).toContain("ctrl+b background")
-    expect(frame).toContain("ctrl+x q 3 queued")
-    expect(frame).toContain("ctrl+x down tools / agents")
-    expect(frame).toContain("ctrl+p cmd")
-    expect(frame).toContain("a-model-name-long-enough-to-force-responsive-truncation")
-    expect(frame).toContain("tools / agents · ctrl+p cmd")
+    for (const expected of [
+      "a-model-name-long-enough-to-force-responsive-truncation",
+      "3 queued",
+      "ctrl+b background",
+      "ctrl+x q 3 queued",
+      "ctrl+x down tools / agents",
+      "ctrl+p cmd",
+      "tools / agents · ctrl+p cmd",
+    ]) {
+      if (!frame.includes(expected)) {
+        throw new Error(`busy footer missing ${JSON.stringify(expected)}; frame=${JSON.stringify(frame)}`)
+      }
+    }
     expect(frame).not.toContain("1 agent")
     expect(statusline.backgroundColor.toInts()).toEqual(tinted)
     expect(mode.backgroundColor.toInts()).toEqual(accent)
