@@ -105,12 +105,12 @@ jobs:
       - name: Exercise packaged compiled host, actor approval, yolo, and reconnect
         working-directory: packages/opencode
         run: |
-          binary="$(find dist -maxdepth 3 -type f -path '*/w1-cli-linux-*/bin/w1' -print -quit)"
-          test -n "$binary"
-          runtime_dir="$(dirname "$binary")/w1-runtime"
-          W1_COMPILED_BINARY="$PWD/$binary" \
-          W1_COMPILED_ENGINE="$PWD/$runtime_dir/w1-engine.mjs" \
-          W1_COMPILED_RUNTIME="$PWD/$runtime_dir/run-stream.mjs" \
+          binary="$(realpath dist/w1-cli-linux-x64/bin/w1)"
+          runtime_dir="$(realpath dist/w1-cli-linux-x64/bin/w1-runtime)"
+          test -x "$binary"
+          W1_COMPILED_BINARY="$binary" \
+          W1_COMPILED_ENGINE="$runtime_dir/w1-engine.mjs" \
+          W1_COMPILED_RUNTIME="$runtime_dir/run-stream.mjs" \
           bun test src/w1/cli.test.ts --test-name-pattern "packaged compiled host"
 
       - name: Cross-build macOS arm64 W1 CLI with frozen Engine
