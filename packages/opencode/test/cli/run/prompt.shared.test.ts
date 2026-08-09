@@ -4,6 +4,7 @@ import {
   isExitCommand,
   isNewCommand,
   movePromptHistory,
+  parseLocalThreadCommand,
   pushPromptHistory,
 } from "@/cli/cmd/run/prompt.shared"
 import type { RunPrompt } from "@/cli/cmd/run/types"
@@ -99,5 +100,13 @@ describe("run prompt shared", () => {
     expect(isNewCommand("/new")).toBe(true)
     expect(isNewCommand(" /NEW ")).toBe(true)
     expect(isNewCommand("/new now")).toBe(false)
+  })
+
+  test("parses local thread commands without folding thread IDs", () => {
+    expect(parseLocalThreadCommand(" /NEW ")).toEqual({ type: "new" })
+    expect(parseLocalThreadCommand("/resume")).toEqual({ type: "resume" })
+    expect(parseLocalThreadCommand(" /RESUME Thread-AbC ")).toEqual({ type: "resume", threadID: "Thread-AbC" })
+    expect(parseLocalThreadCommand("/resume one two")).toBeUndefined()
+    expect(parseLocalThreadCommand("resume thread-1")).toBeUndefined()
   })
 })

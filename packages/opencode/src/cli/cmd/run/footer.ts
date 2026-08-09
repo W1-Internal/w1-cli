@@ -31,6 +31,7 @@ import { createComponent, createSignal, type Accessor, type Setter } from "solid
 import { createStore, reconcile } from "solid-js/store"
 import { OpencodeKeymapProvider } from "@opencode-ai/tui/keymap"
 import { RUN_COMMAND_PANEL_ROWS, RUN_SUBAGENT_PANEL_ROWS } from "./footer.command"
+import { RUN_THREAD_PANEL_ROWS } from "./footer.thread"
 import { SUBAGENT_INSPECTOR_ROWS } from "./footer.subagent"
 import { PROMPT_MAX_ROWS, TEXTAREA_MIN_ROWS } from "./footer.prompt"
 import { RunFooterView } from "./footer.view"
@@ -45,6 +46,10 @@ import type {
   FooterQueuedPrompt,
   FooterState,
   FooterSubagentState,
+  FooterThreadCatalog,
+  FooterThreadCatalogRequest,
+  FooterThreadNew,
+  FooterThreadSelect,
   FooterView,
   PermissionReply,
   QuestionReject,
@@ -98,6 +103,9 @@ type RunFooterOptions = {
   onEditorOpen: (input: { value: string }) => Promise<string | undefined>
   onExit?: () => void
   onSubagentSelect?: (sessionID: string | undefined) => void
+  onThreadCatalogRequest?: FooterThreadCatalogRequest
+  onThreadSelect?: FooterThreadSelect
+  onThreadNew?: FooterThreadNew
   onPasteAttachment?: (text: string) => Promise<RunPromptPaste | undefined>
   brand?: "w1"
   treeSitterClient?: TreeSitterClient
@@ -110,6 +118,7 @@ const SKILL_ROWS = RUN_COMMAND_PANEL_ROWS
 const SUBAGENT_ROWS = RUN_SUBAGENT_PANEL_ROWS
 const MODEL_ROWS = RUN_COMMAND_PANEL_ROWS
 const VARIANT_ROWS = RUN_COMMAND_PANEL_ROWS
+const THREAD_ROWS = RUN_THREAD_PANEL_ROWS
 const NOTICE_DURATION = 3000
 const THEME_REFRESH_DELAYS = [1000, 1000] as const
 
@@ -206,6 +215,8 @@ export class RunFooter implements FooterApi {
   private setSubagent: (next: FooterSubagentState) => void
   private queuedPrompts: Accessor<FooterQueuedPrompt[]>
   private setQueuedPrompts: Setter<FooterQueuedPrompt[]>
+  private threads: Accessor<FooterThreadCatalog>
+  private setThreads: Setter<FooterThreadCatalog>
   private promptRoute: FooterPromptRoute = { type: "composer" }
   private subagentMenuRows = SUBAGENT_ROWS
   private autocomplete = false
@@ -293,6 +304,9 @@ export class RunFooter implements FooterApi {
     const [queuedPrompts, setQueuedPrompts] = createSignal<FooterQueuedPrompt[]>([])
     this.queuedPrompts = queuedPrompts
     this.setQueuedPrompts = setQueuedPrompts
+    const [threads, setThreads] = createSignal<FooterThreadCatalog>({ threads: [] })
+    this.threads = threads
+    this.setThreads = setThreads
     this.base = Math.max(1, renderer.footerHeight - TEXTAREA_MIN_ROWS)
     this.scrollback = this.createScrollback(options.wrote ?? false)
 
@@ -314,6 +328,7 @@ export class RunFooter implements FooterApi {
               view: footer.view,
               subagent: footer.subagent,
               queuedPrompts: footer.queuedPrompts,
+              threads: footer.threads,
               findFiles: options.findFiles,
               agents: footer.agents,
               resources: footer.resources,
@@ -346,6 +361,9 @@ export class RunFooter implements FooterApi {
               onLayout: footer.syncLayout,
               onStatus: footer.setStatus,
               onSubagentSelect: options.onSubagentSelect,
+              onThreadCatalogRequest: options.onThreadCatalogRequest,
+              onThreadSelect: options.onThreadSelect,
+              onThreadNew: options.onThreadNew,
               onQueuedRemove: footer.handleQueuedRemove,
               onPasteAttachment: options.onPasteAttachment,
               brand: options.brand,
@@ -450,6 +468,15 @@ export class RunFooter implements FooterApi {
       }
 
       this.setQueuedPrompts(next.prompts)
+      return
+    }
+
+    if (next.type === "thread.catalog") {
+      if (this.isGone) {
+        return
+      }
+
+      this.setThreads(next.catalog)
       return
     }
 
@@ -713,6 +740,8 @@ export class RunFooter implements FooterApi {
           ? this.base + QUESTION_ROWS
           : this.promptRoute.type === "command"
             ? 1 + COMMAND_ROWS
+            : this.promptRoute.type === "thread-menu"
+              ? 1 + THREAD_ROWS
             : this.promptRoute.type === "skill"
               ? 1 + SKILL_ROWS
               : this.promptRoute.type === "model"

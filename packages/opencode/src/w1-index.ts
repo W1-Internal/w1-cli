@@ -25,6 +25,12 @@ if (args[0] === "__runtime") {
   process.exit(0)
 }
 
+if (args[0] === "__engine") {
+  const enginePath = args[1]
+  if (!enginePath) throw new Error("W1 Engine path is missing.")
+  await import(pathToFileURL(enginePath).href)
+} else {
+
 function show(out: string) {
   const text = out.trimStart()
   if (!text.startsWith("w1 ")) {
@@ -93,4 +99,5 @@ try {
   // run using `docker run --init`.
   // Explicitly exit to avoid any hanging subprocesses.
   process.exit()
+}
 }

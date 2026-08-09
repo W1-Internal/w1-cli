@@ -52,6 +52,25 @@ export function isNewCommand(input: string): boolean {
   return input.trim().toLowerCase() === "/new"
 }
 
+export type LocalThreadCommand = { type: "new" } | { type: "resume"; threadID?: string }
+
+export function parseLocalThreadCommand(input: string): LocalThreadCommand | undefined {
+  const text = input.trim()
+  if (/^\/new$/i.test(text)) {
+    return { type: "new" }
+  }
+
+  const match = /^\/resume(?:\s+([^\s]+))?$/i.exec(text)
+  if (!match) {
+    return
+  }
+
+  return {
+    type: "resume",
+    ...(match[1] ? { threadID: match[1] } : {}),
+  }
+}
+
 export function createPromptHistory(items?: RunPrompt[]): PromptHistoryState {
   const list = (items ?? []).filter((item) => item.text.trim().length > 0).map(promptCopy)
   const next: RunPrompt[] = []

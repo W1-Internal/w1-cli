@@ -189,6 +189,7 @@ export type FooterView =
 
 export type FooterPromptRoute =
   | { type: "composer" }
+  | { type: "thread-menu" }
   | { type: "queued-menu" }
   | { type: "subagent-menu" }
   | { type: "subagent"; sessionID: string }
@@ -196,6 +197,27 @@ export type FooterPromptRoute =
   | { type: "skill" }
   | { type: "model" }
   | { type: "variant" }
+
+export type FooterThreadStatus = "running" | "awaiting_user" | "idle" | "failed" | "recoverable"
+
+export type FooterThreadSummary = {
+  threadID: string
+  title: string
+  status: FooterThreadStatus
+  updatedAt: string | number
+}
+
+export type FooterThreadCatalog = {
+  threads: FooterThreadSummary[]
+  currentThreadID?: string
+  loading?: boolean
+}
+
+export type FooterThreadCatalogRequest = () => void | Promise<void>
+
+export type FooterThreadSelect = (threadID: string) => boolean | void | Promise<boolean | void>
+
+export type FooterThreadNew = () => boolean | void | Promise<boolean | void>
 
 export type FooterSubagentTab = {
   sessionID: string
@@ -256,6 +278,10 @@ export type FooterEvent =
   | {
       type: "queued.prompts"
       prompts: FooterQueuedPrompt[]
+    }
+  | {
+      type: "thread.catalog"
+      catalog: FooterThreadCatalog
     }
   | {
       type: "first"

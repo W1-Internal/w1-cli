@@ -28,6 +28,7 @@ import {
   isExitCommand,
   mentionTriggerIndex,
   isNewCommand,
+  parseLocalThreadCommand,
   movePromptHistory,
   pushPromptHistory,
 } from "./prompt.shared"
@@ -37,6 +38,8 @@ import { FOOTER_MENU_ROWS, createFooterMenuState, type RunFooterMenuItem } from 
 import type { RunFooterTheme } from "./theme"
 import type {
   FooterState,
+  FooterThreadNew,
+  FooterThreadSelect,
   RunAgent,
   RunCommand,
   RunPrompt,
@@ -94,6 +97,10 @@ type PromptInput = {
   onExitRequest?: () => boolean
   onExit: () => void
   onSkillMenu: () => void
+  localThreads?: boolean
+  onThreadMenu?: () => void
+  onThreadSelect?: FooterThreadSelect
+  onThreadNew?: FooterThreadNew
   onRows: (rows: number) => void
   onStatus: (text: string) => void
   onPasteAttachment?: (text: string) => Promise<RunPromptPaste | undefined>
@@ -438,6 +445,16 @@ export function createPromptState(input: PromptInput): PromptState {
         description: "compose in your external editor",
       } satisfies SlashOption,
       { kind: "slash", name: "new", display: "/new", description: "start a new session" } satisfies SlashOption,
+      ...(input.localThreads
+        ? [
+            {
+              kind: "slash" as const,
+              name: "resume",
+              display: "/resume",
+              description: "resume a workspace session",
+            } satisfies SlashOption,
+          ]
+        : []),
       { kind: "slash", name: "exit", display: "/exit", description: "close OpenCode" } satisfies SlashOption,
     ]
     const hidden = new Set(builtins.map((item) => item.name))
@@ -882,7 +899,7 @@ export function createPromptState(input: PromptInput): PromptState {
 
       const cursor = area.cursorOffset
       const head = slashHead(area.plainText)
-      const local = !shell() && (next.name === "new" || next.name === "exit")
+      const local = !shell() && (next.name === "new" || next.name === "resume" || next.name === "exit")
       const separator = !shell() && !local && head && /\s/.test(area.plainText[head.end] ?? "") ? "" : " "
       const text = `/${next.name}${separator}`
 
@@ -1042,6 +1059,7 @@ export function createPromptState(input: PromptInput): PromptState {
     if (current === "variant") return false
     if (current === "queued-menu") return false
     if (current === "subagent-menu") return false
+    if (current === "thread-menu") return false
     return true
   }
 
@@ -1270,6 +1288,38 @@ export function createPromptState(input: PromptInput): PromptState {
     const command = next.mode === "shell" ? undefined : selectedCommand(next.text, next.command)
     if (!command && next.mode !== "shell" && isExitCommand(next.text)) {
       input.onExit()
+      return
+    }
+
+    const local = input.localThreads && !command && next.mode !== "shell" ? parseLocalThreadCommand(next.text) : undefined
+    if (local) {
+      if (local.type === "resume" && !local.threadID) {
+        resetDraft()
+        input.onThreadMenu?.()
+        return
+      }
+
+      if (local.type === "new" && !input.onThreadNew) {
+        input.onStatus("session controls unavailable")
+        return
+      }
+      if (local.type === "resume" && !input.onThreadSelect) {
+        input.onStatus("session controls unavailable")
+        return
+      }
+
+      resetDraft()
+      queueMicrotask(() => {
+        void Promise.resolve()
+          .then(() => (local.type === "new" ? input.onThreadNew!() : input.onThreadSelect!(local.threadID!)))
+          .then((accepted) => {
+            if (accepted === false) restore(next)
+          })
+          .catch(() => {
+            restore(next)
+            input.onStatus("session action failed")
+          })
+      })
       return
     }
 

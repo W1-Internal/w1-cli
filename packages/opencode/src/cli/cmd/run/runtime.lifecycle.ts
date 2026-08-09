@@ -21,6 +21,9 @@ import { entrySplash, exitSplash, splashMeta } from "./splash"
 import { resolveRunTheme } from "./theme"
 import type {
   FooterApi,
+  FooterThreadCatalogRequest,
+  FooterThreadNew,
+  FooterThreadSelect,
   PermissionReply,
   QuestionReject,
   QuestionReply,
@@ -76,6 +79,9 @@ export type LifecycleInput = {
   onInterrupt?: () => void
   onBackground?: () => void
   onSubagentSelect?: (sessionID: string | undefined) => void
+  onThreadCatalogRequest?: FooterThreadCatalogRequest
+  onThreadSelect?: FooterThreadSelect
+  onThreadNew?: FooterThreadNew
   onPasteAttachment?: (text: string) => Promise<RunPromptPaste | undefined>
   brand?: "w1"
 }
@@ -266,6 +272,9 @@ export async function createRuntimeLifecycle(input: LifecycleInput): Promise<Lif
       onVariantSelect: input.onVariantSelect,
       onInterrupt: input.onInterrupt,
       onBackground: input.onBackground,
+      onThreadCatalogRequest: input.onThreadCatalogRequest,
+      onThreadSelect: input.onThreadSelect,
+      onThreadNew: input.onThreadNew,
       onEditorOpen: async ({ value }) => {
         if (closed || renderer.isDestroyed) {
           return
