@@ -37,6 +37,18 @@ jobs:
 
       - name: Run focused footer rendering contracts
         working-directory: packages/opencode
+        run: >-
+          bun test test/cli/run/footer.view.test.tsx
+          --test-name-pattern "direct command panel (shows subagent entry|keeps completed subagents available)"
+
+      - name: Run focused footer statusline contracts
+        working-directory: packages/opencode
+        run: >-
+          bun test test/cli/run/footer.view.test.tsx
+          --test-name-pattern "direct footer (shows editable prompts|separates a lone context hint|hides the subagent hint)"
+
+      - name: Run complete footer rendering contracts
+        working-directory: packages/opencode
         run: bun test test/cli/run/footer.view.test.tsx
 
       - name: Run OpenCode package unit suite
