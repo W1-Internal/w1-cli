@@ -34,7 +34,7 @@ jobs:
   build:
     name: Verify and stage cross-platform npm packages
     if: ${{ inputs.allow_public_runtime }}
-    runs-on: depot-ubuntu-24.04-8
+    runs-on: depot-ubuntu-24.04
     timeout-minutes: 50
     steps:
       - name: Checkout exact W1 CLI source
