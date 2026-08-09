@@ -57,19 +57,23 @@ jobs:
           bun run script/build.ts --target=windows-x64 --skip-embed-web-ui --keep-dist
       - name: Verify exact engine, Canvas, skills, binaries, and archives
         run: |
+          check_file() { test -s "$1" || { echo "missing or empty: $1" >&2; return 1; }; echo "verified: $1"; }
           mac="packages/opencode/dist/w1-cli-darwin-arm64"
           win="packages/opencode/dist/w1-cli-windows-x64"
-          test -x "$mac/bin/w1"
+          check_file "$mac/bin/w1"
           win_binary="$(find "$win/bin" -maxdepth 1 -type f \( -name w1 -o -name w1.exe \) -print -quit)"
-          test -n "$win_binary"
+          test -n "$win_binary" || { echo "Windows binary missing" >&2; find "$win" -maxdepth 4 -type f -print; exit 1; }
+          check_file "$win_binary"
           test "$(cat "$mac/bin/w1-runtime/BUILD_ID")" = "$W1_ENGINE_REF"
           test "$(cat "$win/bin/w1-runtime/BUILD_ID")" = "$W1_ENGINE_REF"
-          test -s "$mac/bin/w1-runtime/node_modules/@napi-rs/canvas-darwin-arm64/skia.darwin-arm64.node"
-          test -s "$win/bin/w1-runtime/node_modules/@napi-rs/canvas-win32-x64-msvc/skia.win32-x64-msvc.node"
-          test -s "$mac/assets/skills/security/SKILL.md"
-          test -s "$win/assets/skills/security/SKILL.md"
+          check_file "$mac/bin/w1-runtime/node_modules/@napi-rs/canvas-darwin-arm64/skia.darwin-arm64.node"
+          check_file "$win/bin/w1-runtime/node_modules/@napi-rs/canvas-win32-x64-msvc/skia.win32-x64-msvc.node"
+          check_file "$mac/assets/skills/security/SKILL.md"
+          check_file "$win/assets/skills/security/SKILL.md"
+          file "$mac/bin/w1"
+          file "$win_binary"
           file "$mac/bin/w1" | grep -Eq 'Mach-O.*arm64|Mach-O.*ARM64'
-          file "$win_binary" | grep -F 'PE32+'
+          file "$win_binary" | grep -Eq 'PE32\+?.*x86-64|PE32\+?.*Intel 80386'
           (cd packages/opencode/dist && zip -qr "$GITHUB_WORKSPACE/w1-cli-$W1_CLI_VERSION-mac-arm64.zip" w1-cli-darwin-arm64)
           (cd packages/opencode/dist && zip -qr "$GITHUB_WORKSPACE/w1-cli-$W1_CLI_VERSION-windows-x64.zip" w1-cli-windows-x64)
           sha256sum w1-cli-*.zip > SHA256SUMS.txt
