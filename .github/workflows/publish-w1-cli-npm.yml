@@ -62,6 +62,11 @@ jobs:
           path: .w1-harness
           persist-credentials: false
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
       - name: Build W1 runtime bundle
         working-directory: .w1-harness
         run: |
