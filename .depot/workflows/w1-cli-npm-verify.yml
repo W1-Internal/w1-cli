@@ -75,17 +75,13 @@ jobs:
         working-directory: packages/opencode
         run: bun test src/w1/auth.test.ts src/w1/runtime.test.ts src/w1/engine.test.ts src/w1/npm-package.test.ts
 
-      - name: Build Linux actor probe and macOS native packages
+      - name: Build Linux compiled-host probe
         working-directory: packages/opencode
         env:
           W1_CLI_SOURCE_REF: ${{ github.sha }}
           W1_RUNTIME_BUNDLE_DIR: ${{ github.workspace }}/.w1-harness/vscode-extension/out/harness
         run: |
           bun run script/build.ts --target=linux-x64 --skip-embed-web-ui
-          bun run script/build.ts --target=linux-x64-musl --keep-dist --skip-install --skip-embed-web-ui
-          bun run script/build.ts --target=darwin-arm64 --keep-dist --skip-install --skip-embed-web-ui
-          bun run script/build.ts --target=darwin-x64 --keep-dist --skip-install --skip-embed-web-ui
-          bun run script/build.ts --target=darwin-x64-baseline --keep-dist --skip-install --skip-embed-web-ui
 
       - name: Exercise final packaged compiled host and TUI startup
         working-directory: packages/opencode
@@ -96,6 +92,17 @@ jobs:
           W1_COMPILED_ENGINE="$runtime_dir/w1-engine.mjs" \
           W1_COMPILED_RUNTIME="$runtime_dir/run-stream.mjs" \
           bun test src/w1/cli.test.ts --test-name-pattern "packaged compiled host"
+
+      - name: Cross-build libc and macOS packages
+        working-directory: packages/opencode
+        env:
+          W1_CLI_SOURCE_REF: ${{ github.sha }}
+          W1_RUNTIME_BUNDLE_DIR: ${{ github.workspace }}/.w1-harness/vscode-extension/out/harness
+        run: |
+          bun run script/build.ts --target=linux-x64-musl --keep-dist --skip-install --skip-embed-web-ui
+          bun run script/build.ts --target=darwin-arm64 --keep-dist --skip-install --skip-embed-web-ui
+          bun run script/build.ts --target=darwin-x64 --keep-dist --skip-install --skip-embed-web-ui
+          bun run script/build.ts --target=darwin-x64-baseline --keep-dist --skip-install --skip-embed-web-ui
 
       - name: Stage and verify no-postinstall packages
         working-directory: packages/opencode
