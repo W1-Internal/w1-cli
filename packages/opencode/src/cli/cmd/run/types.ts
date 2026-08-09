@@ -355,6 +355,9 @@ export type StreamCommit = {
   interrupted?: boolean
   toolState?: StreamToolState
   toolError?: string
+  // Removes the ordinary block separator before and after tightly coupled
+  // activity rows (for example W1 narration -> tool call -> tool result).
+  compact?: boolean
   shell?: {
     callID: string
     command: string

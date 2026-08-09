@@ -734,10 +734,11 @@ export function RunFooterView(props: RunFooterViewProps) {
                 borderColor={theme().line}
                 backgroundColor={runTheme().background}
               >
-                <text fg={theme().muted} wrapMode="none">Tasks</text>
+                <text width="100%" fg={theme().muted} wrapMode="none">Tasks</text>
                 <For each={props.state().tasks}>
                   {(task) => (
                     <text
+                      width="100%"
                       fg={task.status === "in_progress" ? theme().highlight : theme().muted}
                       wrapMode="none"
                       truncate

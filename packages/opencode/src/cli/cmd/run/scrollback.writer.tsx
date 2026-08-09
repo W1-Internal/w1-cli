@@ -87,6 +87,10 @@ export function separatorRows(
     return 0
   }
 
+  if (prev.compact === true || next.compact === true) {
+    return 0
+  }
+
   if (entryLayout(prev) === "inline" && entryLayout(next, body) === "inline") {
     return 0
   }

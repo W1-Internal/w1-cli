@@ -94,7 +94,7 @@ function toolInput(tool: string, input: Record<string, unknown>) {
 
 function toolCall(tool: string, input: Record<string, unknown>) {
   const detail = toolInput(tool, input)
-  return system(`   ● ${tool}${detail ? ` ${detail}` : ""}`)
+  return system(`   ● ${tool}${detail ? ` ${detail}` : ""}`, "system", true)
 }
 
 function toolResult(text: string, ok: boolean) {
@@ -102,11 +102,12 @@ function toolResult(text: string, ok: boolean) {
   return system(
     lines.map((line, index) => index === 0 ? `      └─ ${ok ? "✓" : "✗"} ${line}` : `         ${line}`).join("\n"),
     ok ? "system" : "error",
+    true,
   )
 }
 
-function system(text: string, kind: "system" | "error" = "system"): StreamCommit {
-  return { kind, text, phase: "final", source: "system", partID: randomUUID() }
+function system(text: string, kind: "system" | "error" = "system", compact = false): StreamCommit {
+  return { kind, text, phase: "final", source: "system", partID: randomUUID(), ...(compact ? { compact: true } : {}) }
 }
 
 function question(payload: Record<string, unknown>, sessionID: string): QuestionRequest {
