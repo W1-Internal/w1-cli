@@ -67,7 +67,7 @@ type RpcResponse =
   | { id: string; ok: true; result: unknown }
   | { id: string; ok: false; error: { code: string; message: string; retryable: boolean; structural?: Record<string, unknown> } }
 
-function endpoint() {
+function resolveEndpoint() {
   if (process.platform === "win32") {
     const owner = createHash("sha256").update(`${userInfo().username}\0${homedir()}`).digest("hex").slice(0, 16)
     return `\\\\.\\pipe\\w1-${owner}-v${W1_ENGINE_PROTOCOL_VERSION}`
@@ -133,7 +133,7 @@ export class EngineClient {
   private readonly subscriptions = new Map<string, Subscription>()
   private readonly pendingSubscriptions = new Map<string, Subscription & { buffered: EnginePush[] }>()
 
-  constructor(readonly endpoint = endpoint()) {}
+  constructor(readonly endpoint = resolveEndpoint()) {}
 
   get connected() {
     return this.socket?.writable === true && !this.socket.destroyed
@@ -320,8 +320,4 @@ export class EngineClient {
     this.socket = undefined
     this.buffer = ""
   }
-}
-
-declare global {
-  const W1_CLI_COMPILED: boolean
 }
