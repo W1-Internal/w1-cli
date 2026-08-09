@@ -11,7 +11,7 @@ jobs:
     runs-on: depot-ubuntu-24.04-8
     timeout-minutes: 45
     env:
-      W1_CLI_VERSION: 0.1.4-next.0
+      W1_CLI_VERSION: 0.1.5-next.0
       W1_FINAL_CLI_REF: 9329b9dd74ad55a0bfcc587040597fd87eea04e6
       W1_HARNESS_REF: 31f4106d8ef1ec4ae6db6667e1991a7a10ea11cb
     steps:
@@ -188,7 +188,7 @@ jobs:
       - name: Upload Linux launcher transport probe
         uses: actions/upload-artifact@v4
         with:
-          name: w1-cli-npm-0.1.4-next.0-linux-transport-probe
+          name: w1-cli-npm-0.1.5-next.0-linux-transport-probe
           path: packages/opencode/dist/npm-linux-transport
           include-hidden-files: true
           if-no-files-found: error
@@ -216,7 +216,7 @@ jobs:
       - name: Upload verified package tree
         uses: actions/upload-artifact@v4
         with:
-          name: w1-cli-npm-0.1.4-next.0-macos
+          name: w1-cli-npm-0.1.5-next.0-macos
           path: packages/opencode/dist/npm-artifact
           include-hidden-files: true
           if-no-files-found: error
@@ -236,13 +236,13 @@ jobs:
       - name: Download Mac-only dogfood artifact
         uses: actions/download-artifact@v4
         with:
-          name: w1-cli-npm-0.1.4-next.0-macos
+          name: w1-cli-npm-0.1.5-next.0-macos
           path: mac-artifact
 
       - name: Download Linux launcher transport probe
         uses: actions/download-artifact@v4
         with:
-          name: w1-cli-npm-0.1.4-next.0-linux-transport-probe
+          name: w1-cli-npm-0.1.5-next.0-linux-transport-probe
           path: linux-artifact
 
       - name: Validate extracted Mac manifests including hidden files
@@ -296,6 +296,6 @@ jobs:
         run: |
           prefix="$RUNNER_TEMP/w1-extracted-prefix"
           npm install --prefix "$prefix" --ignore-scripts \
-            "$GITHUB_WORKSPACE/linux-artifact/w1-cli-linux-x64-0.1.4-next.0.tgz" \
-            "$GITHUB_WORKSPACE/linux-artifact/w1-cli-0.1.4-next.0.tgz"
-          test "$("$prefix/node_modules/.bin/w1" --version)" = "0.1.4-next.0"
+            "$GITHUB_WORKSPACE/linux-artifact/w1-cli-linux-x64-0.1.5-next.0.tgz" \
+            "$GITHUB_WORKSPACE/linux-artifact/w1-cli-0.1.5-next.0.tgz"
+          test "$("$prefix/node_modules/.bin/w1" --version)" = "0.1.5-next.0"
