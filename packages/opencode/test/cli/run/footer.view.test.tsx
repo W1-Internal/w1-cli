@@ -630,7 +630,7 @@ test("direct subagent panel renders active subagents", async () => {
     const frame = app.captureCharFrame()
     const list = panelMenu(app.renderer.root)
 
-    expect(frame).toContain("Select subagent")
+    expect(frame).toContain("Tools / Agents")
     expect(frame).toContain("Inspect auth flow")
     expect(frame).toContain("Write migration plan")
     expect(frame).toContain("done")
