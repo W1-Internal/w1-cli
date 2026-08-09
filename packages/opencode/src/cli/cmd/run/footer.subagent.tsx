@@ -164,7 +164,7 @@ export function RunFooterSubagentBody(props: {
               rows()
             ) : (
               <text fg={footer().muted} wrapMode="word">
-                No subagent activity yet
+                No tool or agent activity yet
               </text>
             )}
           </box>

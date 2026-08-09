@@ -88,6 +88,8 @@ describe("run prompt shared", () => {
   })
 
   test("recognizes exit commands", () => {
+    expect(isExitCommand("exit")).toBe(true)
+    expect(isExitCommand(" QUIT ")).toBe(true)
     expect(isExitCommand("/exit")).toBe(true)
     expect(isExitCommand(" /Quit ")).toBe(true)
     expect(isExitCommand("/quit now")).toBe(false)

@@ -42,6 +42,13 @@ export type RunPrompt = {
   }
 }
 
+export type RunPromptAttachment = {
+  placeholder?: string
+  part: Extract<RunPromptPart, { type: "file" }>
+}
+
+export type RunPromptPaste = RunPromptAttachment | { text: string }
+
 export type FooterQueuedPrompt = {
   messageID: string
   partID: string
@@ -90,6 +97,11 @@ export type FooterState = {
   first: boolean
   interrupt: number
   exit: number
+  tasks: Array<{
+    id: string
+    title: string
+    status: string
+  }>
 }
 
 // A partial update to FooterState. The footer merges this onto the current state.
@@ -196,6 +208,7 @@ export type FooterSubagentTab = {
   title?: string
   toolCalls?: number
   lastUpdatedAt: number
+  kind?: "agent" | "tool"
 }
 
 export type FooterSubagentDetail = {

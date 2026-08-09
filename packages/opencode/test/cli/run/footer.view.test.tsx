@@ -147,6 +147,7 @@ function footerState(input: Partial<FooterState> = {}) {
     first: false,
     interrupt: 0,
     exit: 0,
+    tasks: [],
     ...input,
   })[0]
 }
@@ -540,7 +541,7 @@ test("direct command panel shows subagent entry when available", async () => {
     await app.renderOnce()
     const frame = app.captureCharFrame()
 
-    expect(frame).toContain("View subagents")
+    expect(frame).toContain("View tools / agents")
     expect(frame).toContain("1 active")
   } finally {
     app.renderer.destroy()
@@ -588,7 +589,7 @@ test("direct command panel keeps completed subagents available", async () => {
     await app.renderOnce()
     const frame = app.captureCharFrame()
 
-    expect(frame).toContain("View subagents")
+    expect(frame).toContain("View tools / agents")
     expect(frame).toContain("1 recent")
   } finally {
     app.renderer.destroy()
@@ -629,7 +630,7 @@ test("direct subagent panel renders active subagents", async () => {
     const frame = app.captureCharFrame()
     const list = panelMenu(app.renderer.root)
 
-    expect(frame).toContain("Select subagent")
+    expect(frame).toContain("Tools / Agents")
     expect(frame).toContain("Inspect auth flow")
     expect(frame).toContain("Write migration plan")
     expect(frame).toContain("done")
@@ -950,6 +951,7 @@ test("direct footer shows editable prompts and additional queued work while runn
     first: false,
     interrupt: 0,
     exit: 0,
+    tasks: [],
   })
   const [view] = createSignal<FooterView>({ type: "prompt" })
   const [subagents] = createSignal<FooterSubagentState>({
@@ -1037,14 +1039,19 @@ test("direct footer shows editable prompts and additional queued work while runn
     const hint = statusItems.at(-1)!
 
     expect(spinner).toBeDefined()
-    expect(frame).toContain("a-model-name-long-enough-to-force-responsive-truncation")
-    expect(frame).toContain("3 queued")
-    expect(frame).toContain("ctrl+b background")
-    expect(frame).toContain("ctrl+x q 3 queued")
-    expect(frame).toContain("ctrl+x down subagents")
-    expect(frame).toContain("ctrl+p cmd")
-    expect(frame).toContain("a-model-name-long-enough-to-force-responsive-truncation")
-    expect(frame).toContain("subagents · ctrl+p cmd")
+    for (const expected of [
+      "a-model-name-long-enough-to-force-responsive-truncation",
+      "3 queued",
+      "ctrl+b background",
+      "ctrl+x q 3 queued",
+      "ctrl+x down tools / agents",
+      "ctrl+p cmd",
+      "tools / agents · ctrl+p cmd",
+    ]) {
+      if (!frame.includes(expected)) {
+        throw new Error(`busy footer missing ${JSON.stringify(expected)}; frame=${JSON.stringify(frame)}`)
+      }
+    }
     expect(frame).not.toContain("1 agent")
     expect(statusline.backgroundColor.toInts()).toEqual(tinted)
     expect(mode.backgroundColor.toInts()).toEqual(accent)
@@ -1080,7 +1087,7 @@ test("direct footer separates a lone context hint from model and command hint", 
     const frame = app.captureCharFrame()
 
     expect(frame).toContain("GPT-5")
-    expect(frame).toContain("xhigh · ctrl+x down subagents · ctrl+p cmd")
+    expect(frame).toContain("xhigh · ctrl+x down tools / agents · ctrl+p cmd")
     expect(frame).not.toContain("ctrl+b background")
     expect(frame).not.toContain("queued")
   } finally {
@@ -1109,7 +1116,7 @@ test("direct footer hides the subagent hint when only completed subagents remain
 
     expect(frame).toContain("GPT-5")
     expect(frame).toContain("xhigh · ctrl+p cmd")
-    expect(frame).not.toContain("ctrl+x down subagents")
+    expect(frame).not.toContain("ctrl+x down tools / agents")
   } finally {
     app.cleanup()
   }

@@ -9,7 +9,7 @@
 // Also wires SIGINT so Ctrl-c clears a live prompt draft first, then falls
 // back to the usual two-press exit sequence through RunFooter.requestExit().
 import path from "path"
-import { CliRenderEvents, createCliRenderer, type CliRenderer, type ScrollbackWriter } from "@opentui/core"
+import { CliRenderEvents, RGBA, createCliRenderer, type CliRenderer, type ScrollbackWriter } from "@opentui/core"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { Global } from "@opencode-ai/core/global"
 import { openEditor } from "@opencode-ai/tui/editor"
@@ -27,6 +27,7 @@ import type {
   RunAgent,
   RunInput,
   RunPrompt,
+  RunPromptPaste,
   RunResource,
   RunTuiConfig,
 } from "./types"
@@ -75,6 +76,8 @@ export type LifecycleInput = {
   onInterrupt?: () => void
   onBackground?: () => void
   onSubagentSelect?: (sessionID: string | undefined) => void
+  onPasteAttachment?: (text: string) => Promise<RunPromptPaste | undefined>
+  brand?: "w1"
 }
 
 export type Lifecycle = {
@@ -194,6 +197,15 @@ export async function createRuntimeLifecycle(input: LifecycleInput): Promise<Lif
       clearOnShutdown: false,
     })
     const theme = await resolveRunTheme(renderer)
+    if (input.brand === "w1") {
+      const olive = RGBA.fromHex("#a8b83f")
+      theme.footer.highlight = olive
+      theme.footer.statusAccent = olive
+      theme.footer.border = olive
+      theme.footer.line = RGBA.fromHex("#59612d")
+      theme.block.highlight = olive
+      theme.splash.left = olive
+    }
     renderer.setBackgroundColor(theme.background)
     const keymap = createDefaultOpenTuiKeymap(renderer)
     unregisterKeymap = registerOpencodeKeymap(keymap, renderer, input.tuiConfig)
@@ -276,6 +288,8 @@ export async function createRuntimeLifecycle(input: LifecycleInput): Promise<Lif
         }
       },
       onSubagentSelect: input.onSubagentSelect,
+      onPasteAttachment: input.onPasteAttachment,
+      brand: input.brand,
     })
 
     const sigint = () => {
