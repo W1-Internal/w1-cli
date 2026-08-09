@@ -362,7 +362,11 @@ test.skipIf(!process.env.W1_COMPILED_BINARY || !process.env.W1_COMPILED_ENGINE |
       child.onData((data) => (output += data))
       const exited = Promise.withResolvers<number>()
       child.onExit((event) => exited.resolve(event.exitCode))
-      await waitFor(() => output.includes("Ask anything"))
+      try {
+        await waitFor(() => output.includes("Ask anything"))
+      } catch {
+        throw new Error(`compiled W1 composer did not become ready; tail=${JSON.stringify(output.slice(-4_000))}`)
+      }
       child.write("first compiled turn\r")
       await waitFor(async () => (await readJournal()).filter((item) => item.kind === "approval").length === 1)
       const first = await readJournal()
