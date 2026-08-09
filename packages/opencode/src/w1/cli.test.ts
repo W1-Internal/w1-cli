@@ -140,7 +140,9 @@ test.skipIf(process.platform === "win32")("interactive W1 uses the product TUI a
       name: "xterm-256color",
       cols: 110,
       rows: 34,
-      cwd: root,
+      // Keep Bun's source loader rooted at this package so it applies the Solid/OpenTUI
+      // tsconfig. The project under test is still `root` via the positional argument above.
+      cwd: path.resolve(import.meta.dir, "../.."),
       env: Object.fromEntries(
         Object.entries({ ...process.env, HOME: root, USERPROFILE: root, W1_RUNTIME_PATH: runtime }).filter(
           (entry): entry is [string, string] => entry[1] !== undefined,
