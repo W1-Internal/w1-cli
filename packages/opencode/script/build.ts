@@ -4,6 +4,7 @@ import { $ } from "bun"
 import { existsSync } from "node:fs"
 import path from "path"
 import { fileURLToPath } from "url"
+import { createSolidTransformPlugin } from "@opentui/solid/bun-plugin"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -23,6 +24,7 @@ const singleFlag = process.argv.includes("--single")
 const baselineFlag = process.argv.includes("--baseline")
 const skipInstall = process.argv.includes("--skip-install")
 const sourcemapsFlag = process.argv.includes("--sourcemaps")
+const plugin = createSolidTransformPlugin()
 const skipEmbedWebUi = process.argv.includes("--skip-embed-web-ui")
 const keepDist = process.argv.includes("--keep-dist")
 const requestedTarget = process.argv.find((value) => value.startsWith("--target="))?.slice("--target=".length)
@@ -41,8 +43,12 @@ const w1PluginsRoot = path.join(w1RuntimeAssetsRoot, "plugins")
 const w1FontsRoot = path.join(w1RuntimeRoot, "standard_fonts")
 const w1NativeDependenciesRoot = path.join(w1RuntimeRoot, "node_modules", "@napi-rs")
 const w1CanvasRoot = path.join(w1NativeDependenciesRoot, "canvas")
-const w1BuildID = (await $`git rev-parse HEAD`.text()).trim()
-const w1BuildDirty = (await $`git status --porcelain`.text()).trim().length > 0
+const configuredW1SourceRef = process.env.W1_CLI_SOURCE_REF?.trim()
+if (configuredW1SourceRef && !/^[0-9a-f]{40}$/.test(configuredW1SourceRef)) {
+  throw new Error("W1_CLI_SOURCE_REF must be an exact 40-character commit")
+}
+const w1BuildID = configuredW1SourceRef || (await $`git rev-parse HEAD`.text()).trim()
+const w1BuildDirty = !configuredW1SourceRef && (await $`git status --porcelain`.text()).trim().length > 0
 if (!(await Bun.file(w1RuntimeEntrypoint).exists())) {
   throw new Error(`W1 runtime bundle is missing: ${w1RuntimeEntrypoint}`)
 }
@@ -84,6 +90,7 @@ const createEmbeddedWebUIBundle = async () => {
 }
 
 const embeddedFileMap = skipEmbedWebUi ? null : await createEmbeddedWebUIBundle()
+const treeSitterWorker = await Bun.file(fileURLToPath(import.meta.resolve("@opentui/core/parser.worker"))).text()
 
 const allTargets: {
   os: string
@@ -212,11 +219,13 @@ for (const item of targets) {
   await $`mkdir -p dist/${name}/bin`
 
   const workerPath = "./src/cli/tui/worker.ts"
+  const treeSitterWorkerPath = "opentui-tree-sitter-worker.js"
   const bunfsRoot = item.os === "win32" ? "B:/~BUN/root/" : "/$bunfs/root/"
 
   await Bun.build({
     conditions: ["bun", "node"],
     tsconfig: "./tsconfig.json",
+    plugins: [plugin],
     external: ["node-gyp"],
     format: "esm",
     minify: true,
@@ -232,13 +241,21 @@ for (const item of targets) {
       execArgv: [`--user-agent=w1/${productVersion}`, "--use-system-ca", "--"],
       windows: {},
     },
-    files: embeddedFileMap ? { "opencode-web-ui.gen.ts": embeddedFileMap } : {},
-    entrypoints: ["./src/w1-index.ts", ...(embeddedFileMap ? ["opencode-web-ui.gen.ts"] : [])],
+    files: {
+      [treeSitterWorkerPath]: treeSitterWorker,
+      ...(embeddedFileMap ? { "opencode-web-ui.gen.ts": embeddedFileMap } : {}),
+    },
+    entrypoints: [
+      "./src/w1-index.ts",
+      workerPath,
+      treeSitterWorkerPath,
+      ...(embeddedFileMap ? ["opencode-web-ui.gen.ts"] : []),
+    ],
     define: {
       FFF_LIBC: JSON.stringify(item.abi === "musl" ? "musl" : "gnu"),
       OPENCODE_VERSION: `'${productVersion}'`,
       OPENCODE_MODELS_DEV: generated.modelsData,
-      OTUI_TREE_SITTER_WORKER_PATH: bunfsRoot + "opentui-tree-sitter-worker.js",
+      OTUI_TREE_SITTER_WORKER_PATH: bunfsRoot + treeSitterWorkerPath,
       OPENCODE_WORKER_PATH: workerPath,
       OPENCODE_CHANNEL: `'${Script.channel}'`,
       OPENCODE_LIBC: item.os === "linux" ? `'${item.abi ?? "glibc"}'` : "",

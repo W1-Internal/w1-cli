@@ -271,6 +271,132 @@ test.skipIf(process.platform === "win32")(
   },
 )
 
+test.skipIf(!process.env.W1_COMPILED_BINARY || !process.env.W1_COMPILED_ENGINE || !process.env.W1_COMPILED_RUNTIME)(
+  "packaged compiled host completes yolo approval and reconnects through the real engine",
+  async () => {
+    const binary = process.env.W1_COMPILED_BINARY!
+    const engine = process.env.W1_COMPILED_ENGINE!
+    const packagedRuntime = process.env.W1_COMPILED_RUNTIME!
+    const root = (await Bun.$`mktemp -d ${path.join(os.tmpdir(), "w1-compiled-host.XXXXXX")}`.text()).trim()
+    const runtime = path.join(root, "mock-runtime.mjs")
+    const journal = path.join(root, "actor-journal.ndjson")
+    await mkdir(path.join(root, ".w1"), { recursive: true })
+    await Bun.write(path.join(root, ".w1", "auth.json"), JSON.stringify({ token: "w1s_fixture" }))
+    await Bun.write(runtime, [
+      'import { appendFileSync } from "node:fs"',
+      'import { createInterface } from "node:readline"',
+      'process.stdout.write("@@READY@@{\\"pid\\":1}\\n")',
+      'const lines = createInterface({ input: process.stdin })',
+      'let turn',
+      'lines.on("line", (line) => {',
+      '  const frame = JSON.parse(line)',
+      '  if (frame.type === "approval-response") {',
+      `    appendFileSync(${JSON.stringify(journal)}, JSON.stringify({ kind: "approval", decision: frame.decision }) + "\\n")`,
+      '    process.stdout.write(`@@EVT@@${JSON.stringify({ t: "say_delta", text: `compiled:${frame.decision}:${turn.task}` })}\\n`)',
+      '    process.stdout.write("@@RESULT@@{\\"status\\":\\"model_finished\\",\\"steps\\":1}\\n")',
+      '    process.stdout.write("@@IDLE@@{}\\n")',
+      '    turn = undefined',
+      '    return',
+      '  }',
+      '  turn = frame',
+      `  appendFileSync(${JSON.stringify(journal)}, JSON.stringify({ kind: "turn", task: frame.task, enginePid: process.ppid }) + "\\n")`,
+      '  process.stdout.write(`@@APPROVAL@@${JSON.stringify({ requestId: `approval-${Date.now()}`, detail: "compiled host check" })}\\n`)',
+      '})',
+      'export async function serve() { await new Promise((resolve) => lines.once("close", resolve)) }',
+      'export function installRuntimeSignalHandlers() { return () => {} }',
+      '',
+    ].join("\n"))
+
+    const readJournal = async () => {
+      if (!(await Bun.file(journal).exists())) return [] as Array<Record<string, unknown>>
+      return (await Bun.file(journal).text()).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>)
+    }
+    const waitFor = async (predicate: () => boolean | Promise<boolean>, timeoutMs = 10_000) => {
+      const deadline = Date.now() + timeoutMs
+      while (Date.now() < deadline) {
+        if (await predicate()) return
+        await Bun.sleep(25)
+      }
+      throw new Error("timed out waiting for compiled W1 host")
+    }
+
+    try {
+      const runtimeProbe = Bun.spawn({
+        cmd: [binary, "__runtime", packagedRuntime],
+        stdin: "pipe",
+        stdout: "pipe",
+        stderr: "pipe",
+      })
+      let probeOutput = ""
+      const probeReader = runtimeProbe.stdout.getReader()
+      const collectProbeOutput = (async () => {
+        const decoder = new TextDecoder()
+        while (true) {
+          const chunk = await probeReader.read()
+          if (chunk.done) return
+          probeOutput += decoder.decode(chunk.value, { stream: true })
+        }
+      })()
+      await waitFor(() => probeOutput.includes("@@READY@@"))
+      runtimeProbe.kill("SIGTERM")
+      const probeExit = await runtimeProbe.exited
+      await collectProbeOutput
+      expect(probeExit).toBe(0)
+      expect(probeOutput).toContain("@@READY@@")
+
+      const child = Pty.spawn(binary, [root, "--yolo"], {
+        name: "xterm-256color",
+        cols: 110,
+        rows: 34,
+        cwd: root,
+        env: Object.fromEntries(Object.entries({
+          ...process.env,
+          HOME: root,
+          USERPROFILE: root,
+          W1_ENGINE_STATE_DIR: path.join(root, ".w1", "engine", "v1"),
+          W1_ENGINE_PATH: engine,
+          W1_RUNTIME_PATH: runtime,
+        }).filter((entry): entry is [string, string] => entry[1] !== undefined)),
+      })
+      let output = ""
+      child.onData((data) => (output += data))
+      const exited = Promise.withResolvers<number>()
+      child.onExit((event) => exited.resolve(event.exitCode))
+      try {
+        await waitFor(() => output.includes("Ask anything"))
+      } catch {
+        throw new Error(`compiled W1 composer did not become ready; tail=${JSON.stringify(output.slice(-4_000))}`)
+      }
+      child.write("first compiled turn\r")
+      await waitFor(async () => (await readJournal()).filter((item) => item.kind === "approval").length === 1)
+      const first = await readJournal()
+      expect(first.find((item) => item.kind === "approval")?.decision).toBe("acceptForSession")
+      const enginePid = Number(first.find((item) => item.kind === "turn")?.enginePid)
+      expect(enginePid).toBeGreaterThan(1)
+      process.kill(enginePid, "SIGTERM")
+      await waitFor(() => output.includes("Reconnected to W1 Engine"))
+      child.write("second compiled turn\r")
+      await waitFor(async () => (await readJournal()).filter((item) => item.kind === "approval").length === 2)
+      const completed = await readJournal()
+      expect(completed.filter((item) => item.kind === "approval").map((item) => item.decision)).toEqual([
+        "acceptForSession",
+        "acceptForSession",
+      ])
+      expect(completed.filter((item) => item.kind === "turn").map((item) => item.task)).toEqual([
+        "first compiled turn",
+        "second compiled turn",
+      ])
+      child.write("exit\r")
+      const exitCode = await Promise.race([exited.promise, Bun.sleep(5_000).then(() => -1)])
+      if (exitCode === -1) child.kill("SIGKILL")
+      expect(exitCode, output).toBe(0)
+    } finally {
+      await Bun.$`rm -rf ${root}`
+    }
+  },
+  30_000,
+)
+
 test.skipIf(process.platform === "win32")("Ctrl+C closes W1 and its runtime during an active turn", async () => {
   const root = (await Bun.$`mktemp -d ${path.join(os.tmpdir(), "w1-cli-interrupt.XXXXXX")}`.text()).trim()
   const runtime = path.join(root, "mock-runtime.mjs")

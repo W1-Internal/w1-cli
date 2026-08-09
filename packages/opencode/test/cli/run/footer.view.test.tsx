@@ -174,6 +174,7 @@ async function renderFooter(
     onThreadCatalogRequest?: () => void
     onThreadSelect?: (threadID: string) => boolean | void
     onThreadNew?: () => boolean | void
+    onThreadArchive?: (threadID: string, archived: boolean) => boolean | void
   } = {},
 ) {
   const [view] = createSignal<FooterView>({ type: "prompt" })
@@ -227,6 +228,7 @@ async function renderFooter(
           onThreadCatalogRequest={input.onThreadCatalogRequest}
           onThreadSelect={input.onThreadSelect}
           onThreadNew={input.onThreadNew}
+          onThreadArchive={input.onThreadArchive}
           brand={input.brand}
         />
       </OpencodeKeymapProvider>
@@ -489,9 +491,11 @@ test("W1 thread panel groups sessions and keeps New session sticky", async () =>
       { threadID: "thread-recent", title: "Recent work", status: "idle", updatedAt: 10 },
       { threadID: "thread-input", title: "Needs answer", status: "awaiting_user", updatedAt: 20 },
       { threadID: "thread-running", title: "Active work", status: "running", updatedAt: 30 },
+      { threadID: "thread-archived", title: "Archived work", status: "idle", updatedAt: 5, archived: true },
     ],
   })
   let created = 0
+  const archived: Array<[string, boolean]> = []
   const app = await testRender(
     () => (
       <box width={100} height={RUN_THREAD_PANEL_ROWS}>
@@ -502,6 +506,9 @@ test("W1 thread panel groups sessions and keeps New session sticky", async () =>
           onSelect={() => {}}
           onNew={() => {
             created++
+          }}
+          onArchive={(threadID, next) => {
+            archived.push([threadID, next])
           }}
         />
       </box>
@@ -515,9 +522,15 @@ test("W1 thread panel groups sessions and keeps New session sticky", async () =>
     expect(frame).toContain("Running")
     expect(frame).toContain("Needs input")
     expect(frame).toContain("Recent")
+    expect(frame).toContain("Archived")
     expect(frame).toContain("Active work")
     expect(frame).toContain("needs input")
     expect(frame).toContain("+ New session")
+
+    app.mockInput.pressKey("END")
+    app.mockInput.pressKey("ARROW_UP")
+    app.mockInput.pressKey("x", { ctrl: true })
+    expect(archived).toEqual([["thread-archived", false]])
 
     app.mockInput.pressKey("END")
     app.mockInput.pressEnter()

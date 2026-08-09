@@ -12,10 +12,13 @@ jobs:
     timeout-minutes: 45
     env:
       W1_CLI_VERSION: 0.1.4-next.0
+      W1_FINAL_CLI_REF: 3bab1f576754d4331f56787d5df2b44dcde5e137
       W1_HARNESS_REF: a893edf832e8aa4a41d3aa78c3f8057818727fca
     steps:
       - name: Checkout CLI branch
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Checkout pinned W1 harness
         uses: actions/checkout@v6
@@ -41,15 +44,9 @@ jobs:
             "@napi-rs/canvas-darwin-arm64@$canvas_version" \
             "@napi-rs/canvas-darwin-x64@$canvas_version"
           npm --prefix .w1-harness/vscode-extension run vscode:prepublish
-          mkdir -p .w1-harness/scripts/npm
-          cp packages/opencode/script/runtime/w1-engine-entry.ts.txt .w1-harness/scripts/npm/w1-engine-entry.ts
           grep -q 'export async function serve' .w1-harness/scripts/run-stream.ts
           grep -q 'export function installRuntimeSignalHandlers' .w1-harness/scripts/run-stream.ts
-          .w1-harness/vscode-extension/node_modules/.bin/esbuild \
-            .w1-harness/scripts/npm/w1-engine-entry.ts \
-            --bundle --platform=node --format=esm --target=node18 \
-            --external:@napi-rs/canvas \
-            --outfile=.w1-harness/vscode-extension/out/harness/w1-engine.mjs
+          test -s .w1-harness/vscode-extension/out/harness/w1-engine.mjs
           .w1-harness/vscode-extension/node_modules/.bin/esbuild \
             packages/opencode/src/w1/engine.ts \
             --bundle --platform=node --format=esm --target=node18 \
@@ -81,6 +78,7 @@ jobs:
       - name: Build Linux actor probe and macOS native packages
         working-directory: packages/opencode
         env:
+          W1_CLI_SOURCE_REF: ${{ github.sha }}
           W1_RUNTIME_BUNDLE_DIR: ${{ github.workspace }}/.w1-harness/vscode-extension/out/harness
         run: |
           bun run script/build.ts --target=linux-x64 --skip-embed-web-ui
@@ -89,13 +87,25 @@ jobs:
           bun run script/build.ts --target=darwin-x64 --keep-dist --skip-install --skip-embed-web-ui
           bun run script/build.ts --target=darwin-x64-baseline --keep-dist --skip-install --skip-embed-web-ui
 
+      - name: Exercise final packaged compiled host and TUI startup
+        working-directory: packages/opencode
+        run: |
+          binary="$(realpath dist/w1-cli-linux-x64/bin/w1)"
+          runtime_dir="$(realpath dist/w1-cli-linux-x64/bin/w1-runtime)"
+          W1_COMPILED_BINARY="$binary" \
+          W1_COMPILED_ENGINE="$runtime_dir/w1-engine.mjs" \
+          W1_COMPILED_RUNTIME="$runtime_dir/run-stream.mjs" \
+          bun test src/w1/cli.test.ts --test-name-pattern "packaged compiled host"
+
       - name: Stage and verify no-postinstall packages
         working-directory: packages/opencode
         env:
           W1_NPM_ALLOW_PUBLIC_RUNTIME: "1"
           W1_CLI_REF: ${{ github.sha }}
         run: |
+          git -C ../.. merge-base --is-ancestor "$W1_FINAL_CLI_REF" "$GITHUB_SHA"
           bun run script/package-w1-npm.ts
+          strings dist/w1-cli-darwin-arm64/bin/w1 | grep -F "$GITHUB_SHA"
           test -x dist/npm/w1-cli/bin/w1
           test -s dist/npm/w1-cli-darwin-arm64/w1-runtime-manifest.json
           test -s dist/npm/w1-cli-darwin-arm64/bin/w1-runtime/w1-engine.mjs
@@ -127,7 +137,8 @@ jobs:
             if (nativeEntries.length !== 1 || nativeEntries[0][0] !== expectedPath) process.exit(1)
             const [file, record] = nativeEntries[0]
             if (!/^[0-9a-f]{64}$/.test(record.sha256) || !Number.isSafeInteger(record.bytes) || record.bytes <= 0) process.exit(1)
-            console.log(`W1_NATIVE_MANIFEST ${JSON.stringify({ name, file, ...record })}`)
+            if (manifest.build.cli !== process.env.GITHUB_SHA || manifest.build.engine !== process.env.W1_HARNESS_REF) process.exit(1)
+            console.log(`W1_NATIVE_MANIFEST ${JSON.stringify({ name, cliRef: manifest.build.cli, engineRef: manifest.build.engine, file, ...record })}`)
           }
           NODE
           file dist/npm/w1-cli-darwin-arm64/bin/w1 | grep -Eq 'Mach-O.*arm64|Mach-O.*ARM64'

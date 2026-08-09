@@ -19,7 +19,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: W1-Internal/w1
-          ref: 91808b2e98f8ba16287c5baf9266c11bf487740f
+          ref: a893edf832e8aa4a41d3aa78c3f8057818727fca
           path: .w1-engine-source
           persist-credentials: false
 
@@ -95,6 +95,23 @@ jobs:
       - name: Run complete footer rendering contracts
         working-directory: packages/opencode
         run: bun test test/cli/run/footer.view.test.tsx
+
+      - name: Build native Linux W1 CLI with frozen Engine
+        working-directory: packages/opencode
+        env:
+          W1_RUNTIME_BUNDLE_DIR: ${{ github.workspace }}/.w1-engine-source/vscode-extension/out/harness
+        run: bun run script/build.ts --target=linux-x64 --skip-embed-web-ui
+
+      - name: Exercise packaged compiled host, actor approval, yolo, and reconnect
+        working-directory: packages/opencode
+        run: |
+          binary="$(realpath dist/w1-cli-linux-x64/bin/w1)"
+          runtime_dir="$(realpath dist/w1-cli-linux-x64/bin/w1-runtime)"
+          test -x "$binary"
+          W1_COMPILED_BINARY="$binary" \
+          W1_COMPILED_ENGINE="$runtime_dir/w1-engine.mjs" \
+          W1_COMPILED_RUNTIME="$runtime_dir/run-stream.mjs" \
+          bun test src/w1/cli.test.ts --test-name-pattern "packaged compiled host"
 
       - name: Cross-build macOS arm64 W1 CLI with frozen Engine
         working-directory: packages/opencode

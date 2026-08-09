@@ -1,6 +1,6 @@
 import { cmd } from "./cmd"
 import { W1Runtime } from "@/w1/runtime"
-import { EngineClient, engineClientVersion, resolveEngine, type ThreadSummary } from "@/w1/engine"
+import { EngineClient, engineClientVersion, resolveEngine, type EngineStatus, type ThreadSummary } from "@/w1/engine"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import path from "path"
 import { stat } from "fs/promises"
@@ -94,18 +94,24 @@ async function diagnostics(directory: string) {
     const client = new EngineClient()
     try {
       await client.connect({ location: engine, clientVersion: engineClientVersion(InstallationVersion) })
-      checks.push({ name: "handshake", status: "ok", detail: `daemon protocol v1 · build ${engine.buildId}` })
+      const status = await client.request("engine.status", {}) as EngineStatus
+      checks.push({
+        name: "handshake",
+        status: "ok",
+        detail: `daemon ${status.engineVersion} · build ${status.buildId} · ${status.activeTurnCount} active`,
+      })
       const auth = await client.request("auth.snapshot", {}) as { state?: string }
       checks.push({
         name: "engine auth",
         status: auth.state === "signed_in" ? "ok" : "fail",
         detail: auth.state === "signed_in" ? "daemon sees the shared W1 session" : "daemon is signed out",
       })
-      const threads = await client.request("engine.threads.list", { workspacePath: directory }) as ThreadSummary[]
+      const threads = await client.request("engine.threads.list", { workspacePath: directory, includeArchived: true }) as ThreadSummary[]
+      const visibleThreads = threads.filter((item) => !item.archived)
       checks.push({
         name: "history",
         status: "ok",
-        detail: `${threads.length} workspace thread${threads.length === 1 ? "" : "s"} · ${threads.filter((item) => item.state === "running").length} running`,
+        detail: `${visibleThreads.length} workspace thread${visibleThreads.length === 1 ? "" : "s"} · ${threads.filter((item) => item.state === "running").length} running · ${threads.filter((item) => item.archived).length} archived`,
       })
     } catch (error) {
       checks.push({

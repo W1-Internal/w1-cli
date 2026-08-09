@@ -28,16 +28,16 @@ export const EngineCommand = cmd<{}, Args>({
     const location = await resolveEngine()
     if (!location) throw new Error("W1 Engine bundle is missing. Reinstall W1 CLI.")
     const client = new EngineClient()
+    const clientVersion = engineClientVersion(InstallationVersion)
     try {
       await client.connect({
         location,
-        clientVersion: engineClientVersion(InstallationVersion),
+        clientVersion,
         autostart: false,
-        converge: false,
       })
     } catch (cause) {
       if (args.action === "status" && isOffline(cause)) {
-        const status = { running: false, protocolVersion: 1, packageVersion: location.packageVersion }
+        const status = { running: false, protocolVersion: 1, engineVersion: clientVersion, buildId: location.buildId }
         process.stdout.write(args.json ? JSON.stringify(status) + "\n" : "W1 Engine is not running.\n")
         return
       }
@@ -50,7 +50,7 @@ export const EngineCommand = cmd<{}, Args>({
         process.stdout.write(
           args.json
             ? JSON.stringify({ running: true, ...status }) + "\n"
-            : `W1 Engine ${status.packageVersion} · ${status.idle ? "idle" : `${status.activeThreads} active task(s)`} · pid ${status.pid}\n`,
+            : `W1 Engine ${status.engineVersion} · ${status.state === "idle" ? "idle" : `${status.activeTurnCount} active task(s)`} · build ${status.buildId}\n`,
         )
         return
       }

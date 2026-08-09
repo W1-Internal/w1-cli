@@ -1,6 +1,5 @@
 import { spawn } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
-import { access, readFile } from "node:fs/promises"
 import { homedir, userInfo } from "node:os"
 import path from "node:path"
 import { createConnection, type Socket } from "node:net"
@@ -18,6 +17,20 @@ export function assertEngineFrameBytes(byteLength: number) {
 
 export function engineClientVersion(value: string) {
   return /^v?\d+\.\d+\.\d+(?:[-+].*)?$/.test(value.trim()) ? value.trim() : "0.0.0"
+}
+
+function compareVersions(leftValue: string, rightValue: string): -1 | 0 | 1 | undefined {
+  const parse = (value: string) => {
+    const match = /^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(value.trim())
+    return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : undefined
+  }
+  const left = parse(leftValue)
+  const right = parse(rightValue)
+  if (!left || !right) return
+  for (let index = 0; index < 3; index++) {
+    if (left[index] !== right[index]) return left[index]! > right[index]! ? 1 : -1
+  }
+  return 0
 }
 
 export type EngineEvent = {
@@ -54,25 +67,24 @@ export type ThreadSummary = {
   createdAt: string
   updatedAt: string
   lastSequence: number
+  archived: boolean
+}
+
+export type EngineStatus = {
+  protocolVersion: 1
+  engineVersion: string
+  buildId: string
+  minimumClientVersion: string
+  state: "idle" | "active"
+  activeTurnCount: number
+  activeTurns: Array<{ threadId: string; turnId: string; state: "running" | "terminalizing" }>
 }
 
 export type EngineLocation = {
   enginePath: string
-  clientPath: string
   workerPath: string
   buildId: string
-  packageVersion: string
   source: "environment" | "packaged" | "shared" | "development"
-}
-
-export type EngineStatus = {
-  pid: number
-  protocolVersion: number
-  buildId: string
-  packageVersion: string
-  activeThreads: number
-  idle: boolean
-  stopWhenIdle: boolean
 }
 
 type Subscription = {
@@ -124,11 +136,7 @@ function resolveEndpoint() {
 }
 
 async function readBuildId(folder: string) {
-  return (await readFile(path.join(folder, "BUILD_ID"), "utf8").catch(() => "source")).trim() || "source"
-}
-
-async function exists(target: string) {
-  return access(target).then(() => true, () => false)
+  return (await Bun.file(path.join(folder, "BUILD_ID")).text().catch(() => "source")).trim() || "source"
 }
 
 export async function resolveEngine(): Promise<EngineLocation | undefined> {
@@ -138,67 +146,40 @@ export async function resolveEngine(): Promise<EngineLocation | undefined> {
     ...(configuredEngine
       ? [{
           enginePath: path.resolve(configuredEngine),
-          clientPath: path.resolve(path.dirname(configuredEngine), "w1-engine-client.mjs"),
           workerPath: path.resolve(configuredWorker || path.join(path.dirname(configuredEngine), "run-stream.mjs")),
           source: "environment" as const,
         }]
       : []),
     {
       enginePath: path.join(path.dirname(process.execPath), "w1-runtime", "w1-engine.mjs"),
-      clientPath: path.join(path.dirname(process.execPath), "w1-runtime", "w1-engine-client.mjs"),
       workerPath: path.join(path.dirname(process.execPath), "w1-runtime", "run-stream.mjs"),
       source: "packaged" as const,
     },
     {
       enginePath: path.join(homedir(), ".w1", "runtime", "w1-engine.mjs"),
-      clientPath: path.join(homedir(), ".w1", "runtime", "w1-engine-client.mjs"),
       workerPath: path.join(homedir(), ".w1", "runtime", "run-stream.mjs"),
       source: "shared" as const,
     },
     {
       enginePath: path.resolve(import.meta.dir, "../../../../../harness/vscode-extension/out/harness/w1-engine.mjs"),
-      clientPath: path.resolve(import.meta.dir, "../../../../../harness/vscode-extension/out/harness/w1-engine-client.mjs"),
       workerPath: path.resolve(import.meta.dir, "../../../../../harness/vscode-extension/out/harness/run-stream.mjs"),
       source: "development" as const,
     },
   ]
   for (const candidate of candidates) {
-    if (!(await exists(candidate.enginePath)) || !(await exists(candidate.workerPath))) continue
-    const packageRoot = path.resolve(path.dirname(candidate.enginePath), "..", "..")
+    if (!(await Bun.file(candidate.enginePath).exists()) || !(await Bun.file(candidate.workerPath).exists())) continue
     if (candidate.source === "packaged") {
+      const packageRoot = path.resolve(path.dirname(candidate.enginePath), "..", "..")
       const manifest = await validateW1RuntimePackage(packageRoot)
-      return {
-        ...candidate,
-        buildId: manifest.build.engine,
-        packageVersion: manifest.package.version,
-      }
+      return { ...candidate, buildId: manifest.build.engine }
     }
-    return {
-      ...candidate,
-      buildId: await readBuildId(path.dirname(candidate.enginePath)),
-      packageVersion: engineClientVersion(typeof OPENCODE_VERSION === "string" ? OPENCODE_VERSION : "0.0.0"),
-    }
+    return { ...candidate, buildId: await readBuildId(path.dirname(candidate.enginePath)) }
   }
 }
 
 function canAutostart(cause: unknown) {
   const code = cause && typeof cause === "object" && "code" in cause ? String(cause.code) : ""
   return code === "ENOENT" || code === "ECONNREFUSED"
-}
-
-function compareVersions(left: string, right: string) {
-  const parse = (value: string) => /^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(value.trim())?.slice(1, 4).map(Number)
-  const a = parse(left)
-  const b = parse(right)
-  if (!a || !b) return undefined
-  for (let index = 0; index < 3; index++) {
-    if (a[index] !== b[index]) return a[index]! > b[index]! ? 1 : -1
-  }
-  return 0
-}
-
-function sleep(milliseconds: number) {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds))
 }
 
 export class EngineClient {
@@ -225,113 +206,108 @@ export class EngineClient {
     return () => this.disconnectListeners.delete(listener)
   }
 
-  async connect(input: {
-    location: EngineLocation
-    clientVersion: string
-    timeoutMs?: number
-    autostart?: boolean
-    converge?: boolean
-  }) {
+  async connect(input: { location: EngineLocation; clientVersion: string; timeoutMs?: number; autostart?: boolean }): Promise<void> {
+    if (this.connected) return
     try {
       await this.open(Math.min(input.timeoutMs ?? 2_000, 2_000))
     } catch (cause) {
       if (!canAutostart(cause) || input.autostart === false) throw cause
-      await this.launch(input.location, input.timeoutMs ?? 8_000, cause)
+      const compiled = typeof W1_CLI_COMPILED !== "undefined" && W1_CLI_COMPILED
+      const command = process.execPath
+      const args = compiled
+        ? [
+            "__engine",
+            input.location.enginePath,
+            "--engine-version",
+            input.clientVersion,
+            "--worker-command",
+            process.execPath,
+            "--worker-arg",
+            "__runtime",
+            "--worker-arg",
+            input.location.workerPath,
+          ]
+        : [
+            input.location.enginePath,
+            "--engine-version",
+            input.clientVersion,
+            "--worker-command",
+            process.execPath,
+            "--worker-arg",
+            input.location.workerPath,
+            "--worker-arg",
+            "--serve",
+          ]
+      const child = spawn(command, args, { detached: true, stdio: "ignore", windowsHide: true, shell: false })
+      child.unref()
+      const deadline = Date.now() + (input.timeoutMs ?? 8_000)
+      let last: unknown = cause
+      while (Date.now() < deadline && !this.socket) {
+        try {
+          await this.open(500)
+        } catch (next) {
+          last = next
+          await Bun.sleep(100)
+        }
+      }
+      if (!this.socket) throw new Error(`W1 Engine did not start: ${last instanceof Error ? last.message : String(last)}`)
     }
-    const handshake = await this.handshake(input.clientVersion)
-    if (handshake.buildId === input.location.buildId) return
-    if (input.converge === false) return
-
-    const status = await this.request("engine.status", {}) as EngineStatus
-    if (status.protocolVersion !== W1_ENGINE_PROTOCOL_VERSION || !status.packageVersion || !status.buildId) {
-      this.close()
-      throw new Error("The running W1 Engine did not return a trustworthy release identity.")
-    }
-    const comparison = compareVersions(status.packageVersion, input.location.packageVersion)
-    if (comparison === undefined) {
-      this.close()
-      throw new Error("The running W1 Engine has an invalid release version.")
-    }
-    if (comparison === 0) {
-      this.close()
-      throw new Error(
-        `W1 Engine integrity mismatch: release ${status.packageVersion} has build ${status.buildId}, expected ${input.location.buildId}.`,
-      )
-    }
-    if (comparison > 0) return
-    if (status.activeThreads > 0 || !status.idle) {
-      this.close()
-      throw new Error(
-        `W1 Engine ${status.packageVersion} is still running ${status.activeThreads} task(s); ` +
-          `upgrade to ${input.location.packageVersion} was refused until it is idle.`,
-      )
-    }
-
-    await this.request("engine.stop", { whenIdle: false })
-    this.close()
-    await sleep(150)
-    await this.launch(input.location, input.timeoutMs ?? 8_000)
-    const replacement = await this.handshake(input.clientVersion)
-    if (replacement.buildId !== input.location.buildId) {
-      this.close()
-      throw new Error(`W1 Engine upgrade converged on an unexpected build: ${replacement.buildId ?? "unknown"}.`)
-    }
-  }
-
-  private async handshake(clientVersion: string) {
     const handshake = await this.request("protocol.handshake", {
       surface: "cli",
-      clientVersion,
+      clientVersion: input.clientVersion,
       platform: process.platform,
       channel: "release",
-    }) as { protocolVersion?: number; buildId?: string; minimumClientVersion?: string }
+    }) as { protocolVersion?: number; engineVersion?: string; buildId?: string; minimumClientVersion?: string }
     if (handshake.protocolVersion !== W1_ENGINE_PROTOCOL_VERSION) {
       this.close()
       throw new Error("The W1 CLI and Engine protocol versions are incompatible.")
     }
-    return handshake
+    const runningVersion = String(handshake.engineVersion ?? "0.0.0")
+    const comparison = compareVersions(runningVersion, input.clientVersion)
+    if (comparison === undefined) {
+      this.close()
+      throw new Error("The running W1 Engine returned an invalid version handshake.")
+    }
+    if (comparison === 0 && handshake.buildId !== input.location.buildId) {
+      this.close()
+      throw new Error(`The running W1 Engine has the same version but another build identity (expected ${input.location.buildId}, got ${handshake.buildId ?? "unknown"}).`)
+    }
+    if (comparison < 0) {
+      const replacement = await this.request("engine.shutdown", {
+        expectedEngineVersion: runningVersion,
+        expectedBuildId: String(handshake.buildId ?? ""),
+        replacementEngineVersion: input.clientVersion,
+        replacementBuildId: input.location.buildId,
+      }) as { accepted?: boolean; reason?: string; status?: EngineStatus }
+      if (!replacement.accepted) {
+        this.close()
+        const active = replacement.status?.activeTurnCount ?? 0
+        throw new Error(replacement.reason === "active_turns"
+          ? `The older W1 Engine is still running ${active} task${active === 1 ? "" : "s"}; it will upgrade when those tasks finish.`
+          : `The running W1 Engine refused replacement (${replacement.reason ?? "unknown reason"}).`)
+      }
+      this.close()
+      await Bun.sleep(75)
+      return this.connect(input)
+    }
   }
 
-  private async launch(location: EngineLocation, timeoutMs: number, firstCause?: unknown) {
-    const compiled = typeof W1_CLI_COMPILED !== "undefined" && W1_CLI_COMPILED
-    const command = process.execPath
-    const args = compiled
-      ? [
-          "__engine",
-          location.enginePath,
-          "--package-version",
-          location.packageVersion,
-          "--worker-command",
-          process.execPath,
-          "--worker-arg",
-          "__runtime",
-          "--worker-arg",
-          location.workerPath,
-        ]
-      : [
-          location.enginePath,
-          "--package-version",
-          location.packageVersion,
-          "--worker-command",
-          process.execPath,
-          "--worker-arg",
-          location.workerPath,
-          "--worker-arg",
-          "--serve",
-        ]
-    const child = spawn(command, args, { detached: true, stdio: "ignore", windowsHide: true, shell: false })
-    child.unref()
-    const deadline = Date.now() + timeoutMs
-    let last: unknown = firstCause
-    while (Date.now() < deadline && !this.socket) {
+  async reconnect(input: { location: EngineLocation; clientVersion: string; attempts?: number; delayMs?: number }) {
+    const attempts = Math.max(1, Math.min(5, Math.floor(input.attempts ?? 4)))
+    const delayMs = Math.max(0, Math.min(10_000, Math.floor(input.delayMs ?? 250)))
+    this.close()
+    let failure: unknown
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      if (attempt) await Bun.sleep(delayMs)
       try {
-        await this.open(500)
-      } catch (next) {
-        last = next
-        await sleep(100)
+        await this.connect(input)
+        return
+      } catch (cause) {
+        failure = cause
+        this.close()
       }
     }
-    if (!this.socket) throw new Error(`W1 Engine did not start: ${last instanceof Error ? last.message : String(last)}`)
+    throw failure instanceof Error ? failure : new Error(String(failure ?? "W1 Engine reconnect failed."))
   }
 
   private open(timeoutMs: number) {
