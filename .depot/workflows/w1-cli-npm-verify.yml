@@ -177,6 +177,17 @@ jobs:
               --prompt "Reply once to confirm the packaged actor is running." >"$test_root/actor.log" 2>&1
           grep -q 'Packaged actor turn passed.' "$test_root/actor.log"
 
+      - name: Upload extracted-transport Linux launcher probe
+        uses: actions/upload-artifact@v4
+        with:
+          name: w1-cli-npm-0.1.4-next.0-linux-transport-probe
+          path: |
+            packages/opencode/dist/npm/w1-cli
+            packages/opencode/dist/npm/w1-cli-linux-x64
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 2
+
       - name: Restage Mac-only dogfood artifact
         working-directory: packages/opencode
         env:
@@ -196,5 +207,78 @@ jobs:
         with:
           name: w1-cli-npm-0.1.4-next.0-macos
           path: packages/opencode/dist/npm
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
+
+  verify_transport:
+    name: Verify downloaded artifact bytes
+    needs: verify
+    runs-on: depot-ubuntu-24.04-8
+    timeout-minutes: 10
+    steps:
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Download Mac-only dogfood artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: w1-cli-npm-0.1.4-next.0-macos
+          path: mac-artifact
+
+      - name: Download Linux launcher transport probe
+        uses: actions/download-artifact@v4
+        with:
+          name: w1-cli-npm-0.1.4-next.0-linux-transport-probe
+          path: linux-artifact
+
+      - name: Validate extracted Mac manifests including hidden files
+        run: |
+          node - <<'NODE'
+          const crypto = require("node:crypto")
+          const fs = require("node:fs")
+          const path = require("node:path")
+          const roots = fs.readdirSync("mac-artifact")
+            .filter((name) => name.startsWith("w1-cli-darwin-"))
+            .map((name) => path.join("mac-artifact", name))
+          if (roots.length !== 3) throw new Error(`expected three Darwin packages, got ${roots.length}`)
+          const filesBelow = (root, relative) => fs.readdirSync(path.join(root, relative)).sort().flatMap((name) => {
+            const child = path.posix.join(relative, name)
+            const info = fs.lstatSync(path.join(root, child))
+            if (info.isSymbolicLink()) throw new Error(`symlink after transport: ${child}`)
+            return info.isDirectory() ? filesBelow(root, child) : [child]
+          })
+          const requiredHidden = ["affinity", "cloudflare", "context7", "firebase", "github", "paystack"]
+            .map((name) => `assets/plugins/${name}/.claude-plugin/plugin.json`)
+          for (const root of roots) {
+            const manifest = JSON.parse(fs.readFileSync(path.join(root, "w1-runtime-manifest.json"), "utf8"))
+            const actual = [...filesBelow(root, "bin"), ...filesBelow(root, "assets")].sort()
+            const expected = Object.keys(manifest.files).sort()
+            if (actual.length !== expected.length || actual.some((file, index) => file !== expected[index])) {
+              throw new Error(`${path.basename(root)} transport inventory mismatch`)
+            }
+            for (const hidden of requiredHidden) {
+              if (!expected.includes(hidden) || !fs.existsSync(path.join(root, hidden))) throw new Error(`${path.basename(root)} lost ${hidden}`)
+            }
+            for (const [file, record] of Object.entries(manifest.files)) {
+              const bytes = fs.readFileSync(path.join(root, file))
+              const digest = crypto.createHash("sha256").update(bytes).digest("hex")
+              if (bytes.length !== record.bytes || digest !== record.sha256) throw new Error(`${path.basename(root)} hash mismatch: ${file}`)
+            }
+            console.log(`W1_EXTRACTED_MANIFEST ${JSON.stringify({ package: manifest.package.name, files: actual.length, cliRef: manifest.build.cli, engineRef: manifest.build.engine })}`)
+          }
+          const meta = JSON.parse(fs.readFileSync("mac-artifact/w1-cli/package.json", "utf8"))
+          if (Object.keys(meta.optionalDependencies || {}).some((name) => !name.startsWith("w1-cli-darwin-"))) {
+            throw new Error("Mac artifact meta package references a non-Darwin package")
+          }
+          NODE
+
+      - name: Install downloaded Linux packages and invoke the real meta launcher
+        run: |
+          prefix="$RUNNER_TEMP/w1-extracted-prefix"
+          npm install --prefix "$prefix" --ignore-scripts \
+            "$GITHUB_WORKSPACE/linux-artifact/w1-cli-linux-x64" \
+            "$GITHUB_WORKSPACE/linux-artifact/w1-cli"
+          test "$("$prefix/node_modules/.bin/w1" --version)" = "0.1.4-next.0"

@@ -197,6 +197,7 @@ jobs:
         with:
           name: w1-cli-npm-${{ inputs.version }}-macos
           path: packages/opencode/dist/npm
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
 
