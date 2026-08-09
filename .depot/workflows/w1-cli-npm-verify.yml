@@ -53,6 +53,8 @@ jobs:
             packages/opencode/src/w1/engine.ts \
             --bundle --platform=node --format=esm --target=node18 \
             --outfile=.w1-harness/vscode-extension/out/harness/w1-engine-client.mjs
+          cp -R .w1-harness/node_modules/@napi-rs/canvas-linux-x64-gnu \
+            .w1-harness/vscode-extension/out/harness/node_modules/@napi-rs/canvas-linux-x64-gnu
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -69,12 +71,13 @@ jobs:
         working-directory: packages/opencode
         run: bun test src/w1/auth.test.ts src/w1/runtime.test.ts src/w1/cli.test.ts src/w1/engine.test.ts src/w1/npm-package.test.ts
 
-      - name: Build macOS native packages
+      - name: Build Linux actor probe and macOS native packages
         working-directory: packages/opencode
         env:
           W1_RUNTIME_BUNDLE_DIR: ${{ github.workspace }}/.w1-harness/vscode-extension/out/harness
         run: |
-          bun run script/build.ts --target=darwin-arm64 --skip-embed-web-ui
+          bun run script/build.ts --target=linux-x64 --skip-embed-web-ui
+          bun run script/build.ts --target=darwin-arm64 --keep-dist --skip-install --skip-embed-web-ui
           bun run script/build.ts --target=darwin-x64 --keep-dist --skip-install --skip-embed-web-ui
           bun run script/build.ts --target=darwin-x64-baseline --keep-dist --skip-install --skip-embed-web-ui
 
@@ -97,6 +100,31 @@ jobs:
           file dist/npm/w1-cli-darwin-arm64/bin/w1 | grep -Eq 'Mach-O.*arm64|Mach-O.*ARM64'
           file dist/npm/w1-cli-darwin-x64/bin/w1 | grep -Eq 'Mach-O.*x86_64'
           for package in dist/npm/w1-cli-* dist/npm/w1-cli; do npm pack "$package" --dry-run --json >/dev/null; done
+
+      - name: Pack, install, and run a compiled first actor turn
+        working-directory: packages/opencode
+        run: |
+          test_root="$RUNNER_TEMP/w1-npm-install"
+          mkdir -p "$test_root/tarballs" "$test_root/home/.w1" "$test_root/project"
+          npm pack dist/npm/w1-cli-linux-x64 --pack-destination "$test_root/tarballs" >/dev/null
+          npm pack dist/npm/w1-cli --pack-destination "$test_root/tarballs" >/dev/null
+          npm install --prefix "$test_root/prefix" --ignore-scripts \
+            "$test_root/tarballs/w1-cli-linux-x64-${W1_CLI_VERSION}.tgz" \
+            "$test_root/tarballs/w1-cli-${W1_CLI_VERSION}.tgz"
+          node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({token:"depot-fixture-token",email:"depot@w1.test",telemetryId:null,savedAt:new Date().toISOString()}))' \
+            "$test_root/home/.w1/auth.json"
+          W1_MOCK_BACKEND_PORT=43171 node script/runtime/mock-w1-backend.mjs >"$test_root/backend.log" 2>&1 &
+          backend_pid=$!
+          trap 'kill "$backend_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 30); do
+            grep -q 'ready:43171' "$test_root/backend.log" && break
+            sleep 0.1
+          done
+          grep -q 'ready:43171' "$test_root/backend.log"
+          HOME="$test_root/home" W1_DEV=1 W1_BACKEND_URL=http://127.0.0.1:43171 W1_BACKEND_TOKEN=depot-fixture-token \
+            timeout 90 "$test_root/prefix/node_modules/.bin/w1" "$test_root/project" --plain \
+              --prompt "Reply once to confirm the packaged actor is running." >"$test_root/actor.log" 2>&1
+          grep -q 'Packaged actor turn passed.' "$test_root/actor.log"
 
       - name: Upload verified package tree
         uses: actions/upload-artifact@v4

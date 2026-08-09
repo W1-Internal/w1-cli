@@ -56,6 +56,8 @@ describe("W1 npm package contract", () => {
     await nativeFixture(root, "w1-cli-darwin-arm64")
     await nativeFixture(root, "w1-cli-darwin-x64")
     await nativeFixture(root, "w1-cli-darwin-x64-baseline")
+    await mkdir(path.join(root, "dist", "opencode-darwin-arm64", "bin"), { recursive: true })
+    await Bun.write(path.join(root, "dist", "opencode-darwin-arm64", "bin", "opencode"), "must not ship")
 
     const output = path.join(root, "staged")
     const result = await stageW1NpmPackages(stageOptions(root, output))
@@ -101,6 +103,7 @@ describe("W1 npm package contract", () => {
     expect(runtimeManifest.files["bin/w1-runtime/w1-engine.mjs"].sha256).toMatch(/^[0-9a-f]{64}$/)
     expect((await stat(path.join(output, "w1-cli", "bin", "w1"))).mode & 0o111).not.toBe(0)
     expect(await readFile(path.join(output, "w1-cli", "LICENSE"), "utf8")).toContain("MIT License")
+    await expect(stat(path.join(output, "opencode-darwin-arm64"))).rejects.toThrow()
   })
 
   test("fails closed when a native package is missing its bundled runtime", async () => {

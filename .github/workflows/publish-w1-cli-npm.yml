@@ -97,6 +97,8 @@ jobs:
             packages/opencode/src/w1/engine.ts \
             --bundle --platform=node --format=esm --target=node18 \
             --outfile=.w1-harness/vscode-extension/out/harness/w1-engine-client.mjs
+          cp -R .w1-harness/node_modules/@napi-rs/canvas-linux-x64-gnu \
+            .w1-harness/vscode-extension/out/harness/node_modules/@napi-rs/canvas-linux-x64-gnu
           test -s .w1-harness/vscode-extension/out/harness/w1-engine.mjs
           test -s .w1-harness/vscode-extension/out/harness/w1-engine-client.mjs
 
@@ -121,9 +123,42 @@ jobs:
           W1_CLI_VERSION: ${{ inputs.version }}
           W1_RUNTIME_BUNDLE_DIR: ${{ github.workspace }}/.w1-harness/vscode-extension/out/harness
         run: |
-          bun run script/build.ts --target=darwin-arm64 --skip-embed-web-ui
+          bun run script/build.ts --target=linux-x64 --skip-embed-web-ui
+          bun run script/build.ts --target=darwin-arm64 --keep-dist --skip-install --skip-embed-web-ui
           bun run script/build.ts --target=darwin-x64 --keep-dist --skip-install --skip-embed-web-ui
           bun run script/build.ts --target=darwin-x64-baseline --keep-dist --skip-install --skip-embed-web-ui
+
+      - name: Pack, install, and run a compiled first actor turn
+        working-directory: packages/opencode
+        env:
+          W1_NPM_ALLOW_PUBLIC_RUNTIME: "1"
+          W1_CLI_REF: ${{ github.sha }}
+          W1_HARNESS_REF: ${{ inputs.harness_ref }}
+          W1_CLI_VERSION: ${{ inputs.version }}
+        run: |
+          bun run script/package-w1-npm.ts --output=dist/npm-e2e
+          test_root="$RUNNER_TEMP/w1-npm-install"
+          mkdir -p "$test_root/tarballs" "$test_root/home/.w1" "$test_root/project"
+          npm pack dist/npm-e2e/w1-cli-linux-x64 --pack-destination "$test_root/tarballs" >/dev/null
+          npm pack dist/npm-e2e/w1-cli --pack-destination "$test_root/tarballs" >/dev/null
+          npm install --prefix "$test_root/prefix" --ignore-scripts \
+            "$test_root/tarballs/w1-cli-linux-x64-${W1_CLI_VERSION}.tgz" \
+            "$test_root/tarballs/w1-cli-${W1_CLI_VERSION}.tgz"
+          node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({token:"depot-fixture-token",email:"depot@w1.test",telemetryId:null,savedAt:new Date().toISOString()}))' \
+            "$test_root/home/.w1/auth.json"
+          W1_MOCK_BACKEND_PORT=43171 node script/runtime/mock-w1-backend.mjs >"$test_root/backend.log" 2>&1 &
+          backend_pid=$!
+          trap 'kill "$backend_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 30); do
+            grep -q 'ready:43171' "$test_root/backend.log" && break
+            sleep 0.1
+          done
+          grep -q 'ready:43171' "$test_root/backend.log"
+          HOME="$test_root/home" W1_DEV=1 W1_BACKEND_URL=http://127.0.0.1:43171 W1_BACKEND_TOKEN=depot-fixture-token \
+            timeout 90 "$test_root/prefix/node_modules/.bin/w1" "$test_root/project" --plain \
+              --prompt "Reply once to confirm the packaged actor is running." >"$test_root/actor.log" 2>&1
+          grep -q 'Packaged actor turn passed.' "$test_root/actor.log"
+          rm -rf dist/w1-cli-linux-x64 dist/npm-e2e
 
       - name: Stage fail-closed npm package tree
         working-directory: packages/opencode
