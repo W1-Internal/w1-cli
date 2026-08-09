@@ -1,18 +1,23 @@
-name: Publish W1 CLI to npm (macOS next)
+name: Publish W1 CLI to npm
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: Exact semver to publish to the npm next tag
+        description: Exact immutable semver to stage or publish
         required: true
         type: string
       harness_ref:
-        description: Exact W1 harness commit containing the runtime to bundle
+        description: Exact W1 engine commit to bundle
         required: true
         type: string
+      publish:
+        description: Publish verified packages and promote them to latest
+        required: true
+        default: false
+        type: boolean
       allow_public_runtime:
-        description: I approve publishing the bundled W1 runtime source inside the public native npm packages
+        description: I approve publishing the bundled W1 runtime inside the public native packages
         required: true
         default: false
         type: boolean
@@ -27,13 +32,18 @@ permissions:
 
 jobs:
   build:
-    name: Validate and stage macOS npm packages on Depot
+    name: Verify and stage cross-platform npm packages
     if: ${{ inputs.allow_public_runtime }}
-    runs-on: depot-macos-15
-    timeout-minutes: 45
+    runs-on: depot-ubuntu-24.04-8
+    timeout-minutes: 50
     steps:
       - name: Checkout exact W1 CLI source
         uses: actions/checkout@v6
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
 
       - name: Validate immutable release inputs
         env:
@@ -49,7 +59,7 @@ jobs:
             exit 1
           }
 
-      - name: Checkout exact private W1 runtime source
+      - name: Checkout exact private W1 engine source
         uses: actions/checkout@v6
         with:
           repository: W1-Internal/w1
@@ -58,12 +68,19 @@ jobs:
           token: ${{ secrets.W1_HARNESS_READ_TOKEN }}
           persist-credentials: false
 
-      - name: Build W1 runtime bundle
+      - name: Build exact multi-platform W1 runtime
         working-directory: .w1-harness
+        env:
+          HARNESS_REF: ${{ inputs.harness_ref }}
         run: |
           npm ci
+          npm install --no-save --ignore-scripts --force \
+            @napi-rs/canvas-darwin-arm64@0.1.100 \
+            @napi-rs/canvas-darwin-x64@0.1.100 \
+            @napi-rs/canvas-win32-x64-msvc@0.1.100
           npm ci --prefix vscode-extension
           npm --prefix vscode-extension run vscode:prepublish
+          test "$(cat vscode-extension/out/harness/BUILD_ID)" = "$HARNESS_REF"
           test -s vscode-extension/out/harness/run-stream.mjs
 
       - name: Set up Bun
@@ -77,11 +94,17 @@ jobs:
       - name: Run full CLI typecheck
         run: bun typecheck
 
-      - name: Run W1 package contracts
+      - name: Run W1 package and release contracts
         working-directory: packages/opencode
-        run: bun test src/w1/auth.test.ts src/w1/runtime.test.ts src/w1/cli.test.ts src/w1/npm-package.test.ts
+        run: >-
+          bun test
+          src/w1/auth.test.ts
+          src/w1/runtime.test.ts
+          src/w1/cli.test.ts
+          src/w1/npm-package.test.ts
+          src/w1/npm-release-workflow.test.ts
 
-      - name: Build macOS native packages
+      - name: Cross-build Mac and Windows native packages
         working-directory: packages/opencode
         env:
           W1_CLI_VERSION: ${{ inputs.version }}
@@ -90,6 +113,7 @@ jobs:
           bun run script/build.ts --target=darwin-arm64 --skip-embed-web-ui
           bun run script/build.ts --target=darwin-x64 --keep-dist --skip-install --skip-embed-web-ui
           bun run script/build.ts --target=darwin-x64-baseline --keep-dist --skip-install --skip-embed-web-ui
+          bun run script/build.ts --target=windows-x64 --keep-dist --skip-install --skip-embed-web-ui
 
       - name: Stage fail-closed npm package tree
         working-directory: packages/opencode
@@ -97,47 +121,62 @@ jobs:
           W1_NPM_ALLOW_PUBLIC_RUNTIME: "1"
         run: bun run script/package-w1-npm.ts
 
-      - name: Verify staged package contracts
+      - name: Verify exact engine, binaries, runtime, assets, and package manifests
         working-directory: packages/opencode
+        env:
+          HARNESS_REF: ${{ inputs.harness_ref }}
         run: |
+          mac="dist/npm/w1-cli-darwin-arm64"
+          win="dist/npm/w1-cli-windows-x64"
           test -x dist/npm/w1-cli/bin/w1
-          test -x dist/npm/w1-cli-darwin-arm64/bin/w1
-          test -x dist/npm/w1-cli-darwin-x64/bin/w1
-          test -x dist/npm/w1-cli-darwin-x64-baseline/bin/w1
-          test -s dist/npm/w1-cli-darwin-arm64/bin/w1-runtime/run-stream.mjs
-          dist/npm/w1-cli-darwin-arm64/bin/w1 --version
-          for package in dist/npm/w1-cli-* dist/npm/w1-cli; do npm pack "$package" --dry-run --json >/dev/null; done
+          test -x "$mac/bin/w1"
+          test -s "$win/bin/w1.exe"
+          test "$(cat "$mac/bin/w1-runtime/BUILD_ID")" = "$HARNESS_REF"
+          test "$(cat "$win/bin/w1-runtime/BUILD_ID")" = "$HARNESS_REF"
+          test -s "$mac/bin/w1-runtime/run-stream.mjs"
+          test -s "$win/bin/w1-runtime/run-stream.mjs"
+          test -s "$mac/assets/skills/security/SKILL.md"
+          test -s "$win/assets/skills/security/SKILL.md"
+          "$mac/bin/w1" --version
+          mkdir -p dist/npm-packed
+          for package in dist/npm/w1-cli-* dist/npm/w1-cli; do
+            npm pack "$package" --pack-destination dist/npm-packed --json >/dev/null
+          done
+          sha256sum dist/npm-packed/*.tgz > dist/npm-packed/SHA256SUMS.txt
 
       - name: Upload staged npm packages
         uses: actions/upload-artifact@v4
         with:
-          name: w1-cli-npm-${{ inputs.version }}-macos
-          path: packages/opencode/dist/npm
+          name: w1-cli-npm-${{ inputs.version }}-mac-windows
+          path: |
+            packages/opencode/dist/npm
+            packages/opencode/dist/npm-packed
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 14
 
   publish:
-    name: Publish immutable packages with npm OIDC
+    name: Publish immutable packages and promote latest
+    if: ${{ inputs.publish }}
     needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    environment: npm-next
+    timeout-minutes: 20
     env:
       W1_NPM_ALLOW_PUBLIC_RUNTIME: ${{ inputs.allow_public_runtime && '1' || '0' }}
+      NODE_AUTH_TOKEN: ${{ secrets.W1_NPM_TOKEN }}
     steps:
-      - name: Download staged packages
+      - name: Download verified package tree
         uses: actions/download-artifact@v4
         with:
-          name: w1-cli-npm-${{ inputs.version }}-macos
-          path: npm
+          name: w1-cli-npm-${{ inputs.version }}-mac-windows
+          path: release
 
       - name: Set up Node and npm registry
         uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: "24"
           registry-url: https://registry.npmjs.org
 
-      - name: Require an unpublished immutable version
+      - name: Require authorized unpublished packages
         env:
           VERSION: ${{ inputs.version }}
         run: |
@@ -145,7 +184,8 @@ jobs:
             echo "Public W1 runtime exposure was not approved" >&2
             exit 1
           }
-          for package in w1-cli-darwin-arm64 w1-cli-darwin-x64 w1-cli-darwin-x64-baseline w1-cli; do
+          npm whoami >/dev/null
+          for package in w1-cli-darwin-arm64 w1-cli-darwin-x64 w1-cli-darwin-x64-baseline w1-cli-windows-x64 w1-cli; do
             if npm view "$package@$VERSION" version >/dev/null 2>&1; then
               echo "Refusing to overwrite existing $package@$VERSION" >&2
               exit 1
@@ -154,14 +194,34 @@ jobs:
 
       - name: Restore executable modes lost in artifact transport
         run: |
-          chmod 755 npm/w1-cli/bin/w1
-          chmod 755 npm/w1-cli-darwin-arm64/bin/w1
-          chmod 755 npm/w1-cli-darwin-x64/bin/w1
-          chmod 755 npm/w1-cli-darwin-x64-baseline/bin/w1
+          chmod 755 release/npm/w1-cli/bin/w1
+          chmod 755 release/npm/w1-cli-darwin-arm64/bin/w1
+          chmod 755 release/npm/w1-cli-darwin-x64/bin/w1
+          chmod 755 release/npm/w1-cli-darwin-x64-baseline/bin/w1
 
       - name: Publish native packages before the meta package
         run: |
-          npm publish npm/w1-cli-darwin-arm64 --access public --tag next --provenance
-          npm publish npm/w1-cli-darwin-x64 --access public --tag next --provenance
-          npm publish npm/w1-cli-darwin-x64-baseline --access public --tag next --provenance
-          npm publish npm/w1-cli --access public --tag next --provenance
+          npm publish release/npm/w1-cli-darwin-arm64 --access public --tag next --provenance
+          npm publish release/npm/w1-cli-darwin-x64 --access public --tag next --provenance
+          npm publish release/npm/w1-cli-darwin-x64-baseline --access public --tag next --provenance
+          npm publish release/npm/w1-cli-windows-x64 --access public --tag next --provenance
+          npm publish release/npm/w1-cli --access public --tag next --provenance
+
+      - name: Verify registry contents before promotion
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          for package in w1-cli-darwin-arm64 w1-cli-darwin-x64 w1-cli-darwin-x64-baseline w1-cli-windows-x64 w1-cli; do
+            test "$(npm view "$package@$VERSION" version)" = "$VERSION"
+          done
+
+      - name: Promote the verified release to latest
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          npm dist-tag add w1-cli-darwin-arm64@"$VERSION" latest
+          npm dist-tag add w1-cli-darwin-x64@"$VERSION" latest
+          npm dist-tag add w1-cli-darwin-x64-baseline@"$VERSION" latest
+          npm dist-tag add w1-cli-windows-x64@"$VERSION" latest
+          npm dist-tag add w1-cli@"$VERSION" latest
+          test "$(npm view w1-cli dist-tags.latest)" = "$VERSION"

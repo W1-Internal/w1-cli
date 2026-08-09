@@ -37,12 +37,18 @@ describe("W1 npm package contract", () => {
     await nativeFixture(root, "w1-cli-darwin-arm64")
     await nativeFixture(root, "w1-cli-darwin-x64")
     await nativeFixture(root, "w1-cli-darwin-x64-baseline")
+    await nativeFixture(root, "w1-cli-windows-x64")
 
     const output = path.join(root, "staged")
     const result = await stageW1NpmPackages({ dist: path.join(root, "dist"), output, allowPublicRuntime: true })
     expect(result).toEqual({
       version: "0.2.0",
-      nativePackages: ["w1-cli-darwin-arm64", "w1-cli-darwin-x64", "w1-cli-darwin-x64-baseline"],
+      nativePackages: [
+        "w1-cli-darwin-arm64",
+        "w1-cli-darwin-x64",
+        "w1-cli-darwin-x64-baseline",
+        "w1-cli-windows-x64",
+      ],
       metaPackage: "w1-cli",
     })
 
@@ -51,13 +57,14 @@ describe("W1 npm package contract", () => {
       name: "w1-cli",
       version: "0.2.0",
       bin: { w1: "bin/w1" },
-      os: ["darwin"],
+      os: ["darwin", "win32"],
       cpu: ["arm64", "x64"],
       publishConfig: { access: "public", tag: "next", provenance: true },
       optionalDependencies: {
         "w1-cli-darwin-arm64": "0.2.0",
         "w1-cli-darwin-x64": "0.2.0",
         "w1-cli-darwin-x64-baseline": "0.2.0",
+        "w1-cli-windows-x64": "0.2.0",
       },
     })
     expect(meta.scripts).toBeUndefined()
