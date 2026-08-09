@@ -22,6 +22,19 @@ w1 logout                   revoke and remove the shared W1 session
 w1 doctor [project]         inspect filesystem, Git, session, runtime, backend and TTY health
 ```
 
+## npm distribution status
+
+The npm release path is intentionally gated while it is being prepared. The public package name is
+`w1-cli`, while the installed command remains `w1`. Each release uses a small JavaScript launcher
+plus exact-version, OS/architecture-specific native packages; the native package keeps `w1` and its
+adjacent `w1-runtime` together. It does not download executable code during installation and does not
+depend on lifecycle scripts.
+
+The bundled runtime is currently a readable JavaScript artifact. Public npm staging therefore fails
+unless the release operator explicitly sets `W1_NPM_ALLOW_PUBLIC_RUNTIME=1`; the release workflow
+also requires its `allow_public_runtime` confirmation. This is a disclosure decision, not a routine
+build switch. Dogfood releases use npm's `next` tag until the package is ready to become `latest`.
+
 Interactive commands:
 
 ```text
