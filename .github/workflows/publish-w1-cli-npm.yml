@@ -60,7 +60,6 @@ jobs:
           repository: W1-Internal/w1
           ref: ${{ inputs.harness_ref }}
           path: .w1-harness
-          token: ${{ secrets.W1_HARNESS_READ_TOKEN }}
           persist-credentials: false
 
       - name: Build W1 runtime bundle
