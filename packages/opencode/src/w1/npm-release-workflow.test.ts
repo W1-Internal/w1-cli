@@ -18,9 +18,9 @@ describe("W1 npm release workflow", () => {
 
   test("publishes every native package before the meta package and promotes the verified release", async () => {
     const workflow = await readFile(workflowPath, "utf8")
-    const macPublish = workflow.indexOf("npm publish npm/w1-cli-darwin-arm64")
-    const windowsPublish = workflow.indexOf("npm publish npm/w1-cli-windows-x64")
-    const metaPublish = workflow.indexOf("npm publish npm/w1-cli --access public")
+    const macPublish = workflow.indexOf("npm publish release/npm/w1-cli-darwin-arm64")
+    const windowsPublish = workflow.indexOf("npm publish release/npm/w1-cli-windows-x64")
+    const metaPublish = workflow.indexOf("npm publish release/npm/w1-cli --access public")
 
     expect(macPublish).toBeGreaterThan(-1)
     expect(windowsPublish).toBeGreaterThan(macPublish)
