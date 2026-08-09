@@ -297,7 +297,7 @@ export async function runW1Tui(input: Input) {
       footer?.event({ type: "stream.view", view: { type: "prompt" } })
     },
     onQuestionReply(next) {
-      const answer = next.answers.flat().join(", ")
+      const answer = next.answers?.flat().join(", ") ?? ""
       client?.send({ type: "question-response", requestId: next.requestID, answer })
       footer?.event({ type: "stream.view", view: { type: "prompt" } })
     },

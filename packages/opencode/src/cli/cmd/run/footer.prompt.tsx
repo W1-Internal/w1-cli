@@ -223,6 +223,8 @@ export function RunPromptBody(props: {
   onSubmit: () => void
   onKeyDown: (event: KeyEvent) => void
   onContentChange: () => void
+  onPaste?: (event: PasteEvent) => void
+  maxRows?: number
   bind: (area?: TextareaRenderable) => void
 }) {
   const renderer = useRenderer()
