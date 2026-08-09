@@ -100,7 +100,7 @@ jobs:
         working-directory: packages/opencode
         env:
           W1_RUNTIME_BUNDLE_DIR: ${{ github.workspace }}/.w1-engine-source/vscode-extension/out/harness
-        run: bun run script/build.ts --target=darwin-arm64 --skip-install --skip-embed-web-ui
+        run: bun run script/build.ts --target=darwin-arm64 --skip-embed-web-ui
 
       - name: Verify product entrypoints and bundled daemon
         run: |
