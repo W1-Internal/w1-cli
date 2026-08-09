@@ -15,10 +15,10 @@ env:
   W1_ENGINE_REF: 31f4106d8ef1ec4ae6db6667e1991a7a10ea11cb
 
 jobs:
-  mac-arm64:
-    name: macOS arm64 CLI
-    runs-on: depot-macos-15
-    timeout-minutes: 40
+  cross-platform:
+    name: Cross-platform CLI packages
+    runs-on: depot-ubuntu-24.04-8
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - name: Checkout exact Holy Grail engine
@@ -34,95 +34,51 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.14
-      - name: Build exact engine bundle
+      - name: Build multi-platform engine bundle
         working-directory: .w1-engine-source
         run: |
           npm ci
+          npm install --no-save --ignore-scripts --force \
+            @napi-rs/canvas-darwin-arm64@0.1.100 \
+            @napi-rs/canvas-win32-x64-msvc@0.1.100
           npm ci --prefix vscode-extension
           npm --prefix vscode-extension run vscode:prepublish
           test "$(cat vscode-extension/out/harness/BUILD_ID)" = "$W1_ENGINE_REF"
+          test -s vscode-extension/out/harness/node_modules/@napi-rs/canvas-darwin-arm64/skia.darwin-arm64.node
+          test -s vscode-extension/out/harness/node_modules/@napi-rs/canvas-win32-x64-msvc/skia.win32-x64-msvc.node
       - name: Install locked CLI dependencies
         run: bun install --frozen-lockfile
-      - name: Build self-contained macOS CLI
+      - name: Cross-build Mac and Windows CLIs
         working-directory: packages/opencode
         env:
           W1_RUNTIME_BUNDLE_DIR: ${{ github.workspace }}/.w1-engine-source/vscode-extension/out/harness
-        run: bun run script/build.ts --target=darwin-arm64 --skip-embed-web-ui
-      - name: Verify exact engine, Canvas, skills, and binary
         run: |
-          root="packages/opencode/dist/w1-cli-darwin-arm64"
-          test -x "$root/bin/w1"
-          test "$(cat "$root/bin/w1-runtime/BUILD_ID")" = "$W1_ENGINE_REF"
-          test -s "$root/bin/w1-runtime/node_modules/@napi-rs/canvas-darwin-arm64/skia.darwin-arm64.node"
-          test -s "$root/assets/skills/security/SKILL.md"
-          "$root/bin/w1" --version | grep -F "$W1_CLI_VERSION"
-          ditto -c -k --keepParent "$root" "w1-cli-$W1_CLI_VERSION-mac-arm64.zip"
-          shasum -a 256 "w1-cli-$W1_CLI_VERSION-mac-arm64.zip" > SHA256SUMS-mac.txt
+          bun run script/build.ts --target=darwin-arm64 --skip-embed-web-ui
+          bun run script/build.ts --target=windows-x64 --skip-embed-web-ui --keep-dist
+      - name: Verify exact engine, Canvas, skills, binaries, and archives
+        run: |
+          mac="packages/opencode/dist/w1-cli-darwin-arm64"
+          win="packages/opencode/dist/w1-cli-windows-x64"
+          test -x "$mac/bin/w1"
+          win_binary="$(find "$win/bin" -maxdepth 1 -type f \( -name w1 -o -name w1.exe \) -print -quit)"
+          test -n "$win_binary"
+          test "$(cat "$mac/bin/w1-runtime/BUILD_ID")" = "$W1_ENGINE_REF"
+          test "$(cat "$win/bin/w1-runtime/BUILD_ID")" = "$W1_ENGINE_REF"
+          test -s "$mac/bin/w1-runtime/node_modules/@napi-rs/canvas-darwin-arm64/skia.darwin-arm64.node"
+          test -s "$win/bin/w1-runtime/node_modules/@napi-rs/canvas-win32-x64-msvc/skia.win32-x64-msvc.node"
+          test -s "$mac/assets/skills/security/SKILL.md"
+          test -s "$win/assets/skills/security/SKILL.md"
+          file "$mac/bin/w1" | grep -Eq 'Mach-O.*arm64|Mach-O.*ARM64'
+          file "$win_binary" | grep -F 'PE32+'
+          (cd packages/opencode/dist && zip -qr "$GITHUB_WORKSPACE/w1-cli-$W1_CLI_VERSION-mac-arm64.zip" w1-cli-darwin-arm64)
+          (cd packages/opencode/dist && zip -qr "$GITHUB_WORKSPACE/w1-cli-$W1_CLI_VERSION-windows-x64.zip" w1-cli-windows-x64)
+          sha256sum w1-cli-*.zip > SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: w1-cli-${{ env.W1_CLI_VERSION }}-mac-arm64
+          name: w1-cli-${{ env.W1_CLI_VERSION }}-mac-and-windows
           path: |
             w1-cli-${{ env.W1_CLI_VERSION }}-mac-arm64.zip
-            SHA256SUMS-mac.txt
-          if-no-files-found: error
-          retention-days: 14
-
-  windows-x64:
-    name: Windows x64 CLI
-    runs-on: depot-windows-2025-8
-    timeout-minutes: 40
-    steps:
-      - uses: actions/checkout@v4
-      - name: Checkout exact Holy Grail engine
-        uses: actions/checkout@v4
-        with:
-          repository: W1-Internal/w1
-          ref: ${{ env.W1_ENGINE_REF }}
-          path: .w1-engine-source
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.3.14
-      - name: Build exact engine bundle
-        working-directory: .w1-engine-source
-        shell: pwsh
-        run: |
-          npm ci
-          npm ci --prefix vscode-extension
-          npm --prefix vscode-extension run vscode:prepublish
-          if ((Get-Content vscode-extension/out/harness/BUILD_ID -Raw).Trim() -ne $env:W1_ENGINE_REF) { throw "Engine build mismatch" }
-      - name: Install locked CLI dependencies
-        shell: pwsh
-        run: bun install --frozen-lockfile
-      - name: Build self-contained Windows CLI
-        working-directory: packages/opencode
-        shell: pwsh
-        env:
-          W1_RUNTIME_BUNDLE_DIR: ${{ github.workspace }}/.w1-engine-source/vscode-extension/out/harness
-        run: |
-          bun run script/build.ts --target=windows-x64 --skip-embed-web-ui
-          if ($LASTEXITCODE -ne 0) { throw "Windows CLI build failed" }
-      - name: Verify exact engine, Canvas, skills, and binary
-        shell: pwsh
-        run: |
-          $root = "packages/opencode/dist/w1-cli-windows-x64"
-          $binary = Get-ChildItem "$root/bin" -File | Where-Object { $_.Name -in @("w1", "w1.exe") } | Select-Object -First 1
-          if (-not $binary) { throw "W1 Windows binary missing" }
-          if ((Get-Content "$root/bin/w1-runtime/BUILD_ID" -Raw).Trim() -ne $env:W1_ENGINE_REF) { throw "Bundled engine mismatch" }
-          if (-not (Test-Path "$root/bin/w1-runtime/node_modules/@napi-rs/canvas-win32-x64-msvc/skia.win32-x64-msvc.node")) { throw "Windows Canvas runtime missing" }
-          if (-not (Test-Path "$root/assets/skills/security/SKILL.md")) { throw "Bundled product skills missing" }
-          & $binary.FullName --version | Select-String -SimpleMatch $env:W1_CLI_VERSION
-          Compress-Archive -Path $root -DestinationPath "w1-cli-$env:W1_CLI_VERSION-windows-x64.zip"
-          $hash = (Get-FileHash "w1-cli-$env:W1_CLI_VERSION-windows-x64.zip" -Algorithm SHA256).Hash
-          "$hash  w1-cli-$env:W1_CLI_VERSION-windows-x64.zip" | Set-Content SHA256SUMS-windows.txt
-      - uses: actions/upload-artifact@v4
-        with:
-          name: w1-cli-${{ env.W1_CLI_VERSION }}-windows-x64
-          path: |
             w1-cli-${{ env.W1_CLI_VERSION }}-windows-x64.zip
-            SHA256SUMS-windows.txt
+            SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 14
