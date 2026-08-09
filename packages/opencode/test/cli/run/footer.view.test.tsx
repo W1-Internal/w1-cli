@@ -528,7 +528,7 @@ test("W1 thread panel groups sessions and keeps New session sticky", async () =>
     expect(frame).toContain("+ New session")
 
     app.mockInput.pressKey("END")
-    app.mockInput.pressKey("UP")
+    app.mockInput.pressKey("ARROW_UP")
     app.mockInput.pressKey("x", { ctrl: true })
     expect(archived).toEqual([["thread-archived", false]])
 
