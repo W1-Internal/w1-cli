@@ -1,0 +1,37 @@
+name: Holy Grail TUI (Depot)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: W1 product TUI
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact branch
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Install locked dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck repository
+        run: bun typecheck
+
+      - name: Run focused W1 TUI contracts
+        run: >-
+          bun test
+          packages/opencode/src/w1/cli.test.ts
+          packages/opencode/test/cli/run/footer.view.test.tsx
+
+      - name: Run OpenCode package unit suite
+        working-directory: packages/opencode
+        run: bun test --timeout 30000 --only-failures
