@@ -111,7 +111,17 @@ const server = createServer((socket) => {
         ok({ accepted: true, durable: true, eventId: submitted.eventId, threadId, turnId, sequence: submitted.sequence })
         pushCatalog(summary)
         push(threadId, submitted)
-        push(threadId, event(threadId, turnId, "worker.event", { tag: "EVT", payload: { t: "task_state", items: [{ id: "t1", title: "Inspect runtime", status: "in_progress" }] } }))
+        push(threadId, event(threadId, turnId, "worker.event", {
+          tag: "EVT",
+          payload: {
+            t: "task_state",
+            items: Array.from({ length: 12 }, (_, index) => ({
+              id: `t${index + 1}`,
+              title: `Audit task ${index + 1}`,
+              status: index < 4 ? "completed" : index === 4 ? "in_progress" : "pending",
+            })),
+          },
+        }))
         push(threadId, event(threadId, turnId, "worker.event", { tag: "EVT", payload: { t: "action", tool: "read", toolCallId: "call-1", input: { path: "README.md" } } }))
         push(threadId, event(threadId, turnId, "worker.event", { tag: "EVT", payload: { t: "observation", toolCallId: "call-1", ok: true, observation: "line one\nline two\nline three" } }))
         push(threadId, { tag: "EVT", data: { t: "say_delta", text: "| Check | Result |\n|---|---|\n| TUI | Ready |" } }, true)

@@ -87,6 +87,24 @@ function bounded(value: string) {
   return value.length <= MAX_TOOL_OUTPUT ? value : value.slice(0, MAX_TOOL_OUTPUT) + "\n… output truncated in TUI"
 }
 
+function toolInput(tool: string, input: Record<string, unknown>) {
+  if (tool === "task_update" && Array.isArray(input.tasks)) return `${input.tasks.length} tasks`
+  return JSON.stringify(input).slice(0, 220)
+}
+
+function toolCall(tool: string, input: Record<string, unknown>) {
+  const detail = toolInput(tool, input)
+  return system(`   ● ${tool}${detail ? ` ${detail}` : ""}`)
+}
+
+function toolResult(text: string, ok: boolean) {
+  const lines = (preview(text) || (ok ? "done" : "failed")).split("\n")
+  return system(
+    lines.map((line, index) => index === 0 ? `      └─ ${ok ? "✓" : "✗"} ${line}` : `         ${line}`).join("\n"),
+    ok ? "system" : "error",
+  )
+}
+
 function system(text: string, kind: "system" | "error" = "system"): StreamCommit {
   return { kind, text, phase: "final", source: "system", partID: randomUUID() }
 }
@@ -336,7 +354,7 @@ export async function runW1Tui(input: Input) {
         const tool = String(payload.tool ?? "tool")
         const args = record(payload.input)
         controller.tools.set(id, { tool, input: args, started: Date.now() })
-        if (isVisible(controller)) footer!.append(system(`● ${tool} ${JSON.stringify(args).slice(0, 220)}`))
+        if (isVisible(controller)) footer!.append(toolCall(tool, args))
         controller.tabs.tabs.push({ sessionID: `tool:${id}`, partID: id, callID: id, label: tool, description: tool, status: "running", lastUpdatedAt: Date.now(), kind: "tool" })
         controller.tabs.details[`tool:${id}`] = { sessionID: `tool:${id}`, commits: [system(`${tool}\n${JSON.stringify(args, null, 2)}`)] }
         while (controller.tabs.tabs.length > MAX_TOOL_TABS) {
@@ -352,7 +370,7 @@ export async function runW1Tui(input: Input) {
         const current = controller.tools.get(id)
         const text = String(payload.observation ?? "")
         const ok = payload.ok !== false
-        if (isVisible(controller)) footer!.append(system(`${ok ? "  ✓" : "  ✗"} ${preview(text) || (ok ? "done" : "failed")}`, ok ? "system" : "error"))
+        if (isVisible(controller)) footer!.append(toolResult(text, ok))
         if (current) {
           const key = `tool:${id}`
           const tab = controller.tabs.tabs.find((item) => item.sessionID === key)

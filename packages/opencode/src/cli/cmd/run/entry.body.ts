@@ -75,7 +75,7 @@ function reasoningBody(raw: string): RunEntryBody {
 }
 
 function systemBody(raw: string, phase: StreamCommit["phase"]): RunEntryBody {
-  return textBody(phase === "progress" ? raw : raw.trim())
+  return textBody(phase === "progress" ? raw : raw.trimEnd())
 }
 
 export function entryFlags(commit: StreamCommit): EntryFlags {
