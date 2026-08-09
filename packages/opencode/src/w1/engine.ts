@@ -56,12 +56,33 @@ export type EngineLocation = {
 type Subscription = {
   threadId: string
   cursor: number
-  listener: (message: EnginePush) => void
+  listener: (message: ThreadPush) => void
+}
+
+type WorkspaceSubscription = {
+  workspacePath: string
+  cursor: number
+  listener: (message: CatalogPush) => void
 }
 
 export type EnginePush =
   | { type: "event"; subscriptionId: string; threadId: string; cursor: number; event: EngineEvent }
   | { type: "transient"; subscriptionId: string; threadId: string; event: { tag: string; data: Record<string, unknown> } }
+  | { type: "catalog"; subscriptionId: string; workspacePath: string; cursor: number; thread: ThreadSummary }
+
+export type ThreadPush = Exclude<EnginePush, { type: "catalog" }>
+export type CatalogPush = Extract<EnginePush, { type: "catalog" }>
+
+export function selectedMessagesAfterSnapshot(messages: ThreadPush[], snapshotSequence: number) {
+  let durableBoundary = -1
+  for (let index = 0; index < messages.length; index++) {
+    const message = messages[index]
+    if (message.type === "event" && message.event.sequence <= snapshotSequence) durableBoundary = index
+  }
+  return messages.slice(durableBoundary + 1).filter((message) =>
+    message.type === "transient" || message.event.sequence > snapshotSequence,
+  )
+}
 
 type RpcResponse =
   | { id: string; ok: true; result: unknown }
@@ -131,7 +152,8 @@ export class EngineClient {
     timer: ReturnType<typeof setTimeout>
   }>()
   private readonly subscriptions = new Map<string, Subscription>()
-  private readonly pendingSubscriptions = new Map<string, Subscription & { buffered: EnginePush[] }>()
+  private readonly workspaceSubscriptions = new Map<string, WorkspaceSubscription>()
+  private readonly orphanMessages = new Map<string, EnginePush[]>()
 
   constructor(readonly endpoint = resolveEndpoint()) {}
 
@@ -233,12 +255,26 @@ export class EngineClient {
         } catch {
           continue
         }
-        if (message.type === "event" || message.type === "transient") {
+        if (message.type === "event" || message.type === "transient" || message.type === "catalog") {
           const push = message as EnginePush
+          if (push.type === "catalog") {
+            const subscription = this.workspaceSubscriptions.get(push.subscriptionId)
+            if (!subscription) {
+              const buffered = this.orphanMessages.get(push.subscriptionId) ?? []
+              buffered.push(push)
+              this.orphanMessages.set(push.subscriptionId, buffered)
+              continue
+            }
+            if (!Number.isInteger(push.cursor) || push.cursor <= subscription.cursor) continue
+            subscription.cursor = push.cursor
+            subscription.listener(push)
+            continue
+          }
           const subscription = this.subscriptions.get(push.subscriptionId)
-          const pending = !subscription ? this.pendingSubscriptions.get(push.threadId) : undefined
-          if (pending) {
-            pending.buffered.push(push)
+          if (!subscription) {
+            const buffered = this.orphanMessages.get(push.subscriptionId) ?? []
+            buffered.push(push)
+            this.orphanMessages.set(push.subscriptionId, buffered)
             continue
           }
           if (subscription && push.type === "event") {
@@ -266,7 +302,8 @@ export class EngineClient {
       }
       this.pending.clear()
       this.subscriptions.clear()
-      this.pendingSubscriptions.clear()
+      this.workspaceSubscriptions.clear()
+      this.orphanMessages.clear()
     })
   }
 
@@ -283,16 +320,10 @@ export class EngineClient {
     })
   }
 
-  async subscribeThread(input: { threadId: string; afterSequence: number }, listener: (message: EnginePush) => void) {
-    const subscription: Subscription & { buffered: EnginePush[] } = { ...input, cursor: input.afterSequence, listener, buffered: [] }
-    this.pendingSubscriptions.set(input.threadId, subscription)
+  async subscribeThread(input: { threadId: string; afterSequence: number; workspacePath?: string }, listener: (message: ThreadPush) => void) {
+    const subscription: Subscription = { threadId: input.threadId, cursor: input.afterSequence, listener }
     let result: { subscriptionId: string; replay: EngineEvent[]; cursor: number; active: boolean }
-    try {
-      result = await this.request("events.subscribe", input) as typeof result
-    } catch (cause) {
-      this.pendingSubscriptions.delete(input.threadId)
-      throw cause
-    }
+    result = await this.request("events.subscribe", input) as typeof result
     this.subscriptions.set(result.subscriptionId, subscription)
     for (const event of [...result.replay].sort((left, right) => left.sequence - right.sequence)) {
       if (event.sequence <= subscription.cursor) continue
@@ -300,18 +331,54 @@ export class EngineClient {
       listener({ type: "event", subscriptionId: result.subscriptionId, threadId: input.threadId, cursor: event.sequence, event })
     }
     subscription.cursor = Math.max(subscription.cursor, result.cursor)
-    this.pendingSubscriptions.delete(input.threadId)
-    for (const push of subscription.buffered.splice(0)) {
+    for (const push of this.orphanMessages.get(result.subscriptionId) ?? []) {
+      if (push.type === "catalog") continue
       if (push.type === "event") {
         if (push.event.sequence <= subscription.cursor) continue
         subscription.cursor = push.event.sequence
       }
-      listener(push)
+      listener(push as ThreadPush)
     }
+    this.orphanMessages.delete(result.subscriptionId)
     return {
       cursor: subscription.cursor,
       active: result.active,
-      close: () => this.subscriptions.delete(result.subscriptionId),
+      close: async () => {
+        this.subscriptions.delete(result.subscriptionId)
+        this.orphanMessages.delete(result.subscriptionId)
+        await this.request("events.unsubscribe", { subscriptionId: result.subscriptionId })
+      },
+    }
+  }
+
+  async subscribeWorkspace(
+    input: { workspacePath: string },
+    listener: (message: CatalogPush) => void,
+    onSnapshot?: (snapshot: { cursor: number; threads: ThreadSummary[] }) => void,
+  ) {
+    const workspacePath = path.resolve(input.workspacePath)
+    const subscription: WorkspaceSubscription = { workspacePath, cursor: 0, listener }
+    const result = await this.request("catalog.subscribe", { workspacePath }) as {
+      subscriptionId: string
+      snapshot: { cursor: number; threads: ThreadSummary[] }
+    }
+    onSnapshot?.(result.snapshot)
+    subscription.cursor = result.snapshot.cursor
+    this.workspaceSubscriptions.set(result.subscriptionId, subscription)
+    for (const message of this.orphanMessages.get(result.subscriptionId) ?? []) {
+      if (message.type !== "catalog" || message.cursor <= subscription.cursor) continue
+      subscription.cursor = message.cursor
+      listener(message)
+    }
+    this.orphanMessages.delete(result.subscriptionId)
+    return {
+      cursor: subscription.cursor,
+      threads: result.snapshot.threads,
+      close: async () => {
+        this.workspaceSubscriptions.delete(result.subscriptionId)
+        this.orphanMessages.delete(result.subscriptionId)
+        await this.request("catalog.unsubscribe", { subscriptionId: result.subscriptionId })
+      },
     }
   }
 
