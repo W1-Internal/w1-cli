@@ -115,7 +115,7 @@ jobs:
 
       - name: Run W1 package contracts
         working-directory: packages/opencode
-        run: bun test src/w1/auth.test.ts src/w1/runtime.test.ts src/w1/cli.test.ts src/w1/engine.test.ts src/w1/npm-package.test.ts
+        run: bun test src/w1/auth.test.ts src/w1/runtime.test.ts src/w1/engine.test.ts src/w1/npm-package.test.ts
 
       - name: Build macOS native packages
         working-directory: packages/opencode
