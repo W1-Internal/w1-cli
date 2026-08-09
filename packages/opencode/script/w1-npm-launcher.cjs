@@ -93,6 +93,21 @@ function requireDirectory(root, relative, label) {
   if (!info || !info.isDirectory() || fs.readdirSync(target).length === 0) throw new Error(`${label} is missing: ${relative}`)
 }
 
+function filesBelow(root, relative) {
+  const directory = packageFile(root, relative)
+  const files = []
+  for (const name of fs.readdirSync(directory).sort()) {
+    const child = path.posix.join(relative, name)
+    const target = packageFile(root, child)
+    const info = fs.lstatSync(target)
+    if (info.isSymbolicLink()) throw new Error(`runtime contains a symbolic link: ${child}`)
+    if (info.isDirectory()) files.push(...filesBelow(root, child))
+    else if (info.isFile()) files.push(child)
+    else throw new Error(`runtime contains a non-regular entry: ${child}`)
+  }
+  return files
+}
+
 function validateNativePackage(root, name, platform, arch) {
   const manifestPath = path.join(root, "w1-runtime-manifest.json")
   const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"))
@@ -119,6 +134,11 @@ function validateNativePackage(root, name, platform, arch) {
   ]
   for (const relative of entrypoints) {
     if (typeof relative !== "string" || !manifest.files?.[relative]) throw new Error(`runtime entrypoint is unverified: ${relative}`)
+  }
+  const expectedFiles = Object.keys(manifest.files || {}).sort()
+  const actualFiles = [...filesBelow(root, "bin"), ...filesBelow(root, "assets")].sort()
+  if (expectedFiles.length !== actualFiles.length || expectedFiles.some((value, index) => value !== actualFiles[index])) {
+    throw new Error("runtime file inventory does not match its signed manifest")
   }
   for (const [relative, expected] of Object.entries(manifest.files || {})) {
     if (!/^[0-9a-f]{64}$/.test(expected.sha256) || !Number.isSafeInteger(expected.bytes) || expected.bytes < 0) {

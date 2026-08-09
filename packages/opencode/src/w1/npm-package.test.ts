@@ -177,6 +177,20 @@ describe("W1 npm package contract", () => {
     expect(await new Response(child.stderr).text()).toContain("runtime integrity check failed")
   })
 
+  test.skipIf(process.platform === "win32")("launcher rejects an unmanifested plugin injection", async () => {
+    const root = await temporaryRoot()
+    const platform = process.platform === "darwin" ? "darwin" : "linux"
+    const arch = process.arch === "arm64" ? "arm64" : "x64"
+    const name = `w1-cli-${platform}-${arch}`
+    const modules = path.join(root, "node_modules")
+    await nativeFixture(root, name)
+    await stageW1NpmPackages(stageOptions(root, modules))
+    await Bun.write(path.join(modules, name, "assets", "plugins", "injected", "plugin.js"), "throw new Error('injected')")
+    const child = Bun.spawn({ cmd: ["node", path.join(modules, "w1-cli", "bin", "w1")], stdout: "pipe", stderr: "pipe" })
+    expect(await child.exited).toBe(1)
+    expect(await new Response(child.stderr).text()).toContain("file inventory does not match")
+  })
+
   test("staging fails closed when assets or the adjacent engine client are missing", async () => {
     const root = await temporaryRoot()
     const target = await nativeFixture(root, "w1-cli-darwin-arm64")

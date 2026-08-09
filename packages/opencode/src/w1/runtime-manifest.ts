@@ -52,6 +52,21 @@ async function requireDirectory(root: string, relative: string, label: string) {
   if ((await readdir(target)).length === 0) throw new Error(`W1 ${label} is empty: ${relative}`)
 }
 
+async function filesBelow(root: string, relative: string): Promise<string[]> {
+  const directory = packagePath(root, relative)
+  const files: string[] = []
+  for (const name of (await readdir(directory)).sort()) {
+    const child = path.posix.join(relative, name)
+    const target = packagePath(root, child)
+    const info = await lstat(target)
+    if (info.isSymbolicLink()) throw new Error(`W1 runtime contains a symbolic link: ${child}`)
+    if (info.isDirectory()) files.push(...(await filesBelow(root, child)))
+    else if (info.isFile()) files.push(child)
+    else throw new Error(`W1 runtime contains a non-regular entry: ${child}`)
+  }
+  return files
+}
+
 function packagePath(root: string, relative: string) {
   if (!relative || path.isAbsolute(relative) || relative.includes("\\")) {
     throw new Error(`W1 runtime manifest contains an invalid path: ${relative}`)
@@ -89,6 +104,12 @@ export async function validateW1RuntimePackage(root: string): Promise<W1RuntimeM
     if (typeof relative !== "string" || !manifest.files[relative]) {
       throw new Error(`W1 runtime manifest is missing an entrypoint hash: ${String(relative)}`)
     }
+  }
+
+  const expectedFiles = Object.keys(manifest.files).sort()
+  const actualFiles = [...(await filesBelow(resolvedRoot, "bin")), ...(await filesBelow(resolvedRoot, "assets"))].sort()
+  if (expectedFiles.length !== actualFiles.length || expectedFiles.some((value, index) => value !== actualFiles[index])) {
+    throw new Error("W1 runtime file inventory does not match its signed manifest.")
   }
 
   for (const [relative, expected] of Object.entries(manifest.files)) {
