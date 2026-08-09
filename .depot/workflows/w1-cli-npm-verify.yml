@@ -1,0 +1,103 @@
+name: Verify W1 CLI npm runtime
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: depot-macos-15
+    timeout-minutes: 45
+    env:
+      W1_CLI_VERSION: 0.1.4-next.0
+      W1_HARNESS_REF: 91808b2e98f8ba16287c5baf9266c11bf487740f
+    steps:
+      - name: Checkout CLI branch
+        uses: actions/checkout@v6
+
+      - name: Checkout pinned W1 harness
+        uses: actions/checkout@v6
+        with:
+          repository: W1-Internal/w1
+          ref: ${{ env.W1_HARNESS_REF }}
+          path: .w1-harness
+          token: ${{ secrets.W1_HARNESS_READ_TOKEN }}
+          persist-credentials: false
+
+      - name: Build pinned runtime bundles
+        run: |
+          npm ci --prefix .w1-harness
+          npm ci --prefix .w1-harness/vscode-extension
+          npm --prefix .w1-harness/vscode-extension run vscode:prepublish
+          mkdir -p .w1-harness/scripts/npm
+          cp packages/opencode/script/runtime/w1-engine-entry.ts.txt .w1-harness/scripts/npm/w1-engine-entry.ts
+          cp .w1-harness/scripts/run-stream.ts .w1-harness/scripts/run-stream-npm.ts
+          cat packages/opencode/script/runtime/run-stream-exports.ts.txt >> .w1-harness/scripts/run-stream-npm.ts
+          .w1-harness/vscode-extension/node_modules/.bin/esbuild \
+            .w1-harness/scripts/run-stream-npm.ts \
+            --bundle --platform=node --format=esm --target=node18 \
+            --external:@napi-rs/canvas \
+            --outfile=.w1-harness/vscode-extension/out/harness/run-stream.mjs
+          .w1-harness/vscode-extension/node_modules/.bin/esbuild \
+            .w1-harness/scripts/npm/w1-engine-entry.ts \
+            --bundle --platform=node --format=esm --target=node18 \
+            --external:@napi-rs/canvas \
+            --outfile=.w1-harness/vscode-extension/out/harness/w1-engine.mjs
+          .w1-harness/vscode-extension/node_modules/.bin/esbuild \
+            packages/opencode/src/w1/engine.ts \
+            --bundle --platform=node --format=esm --target=node18 \
+            --outfile=.w1-harness/vscode-extension/out/harness/w1-engine-client.mjs
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Install locked CLI dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck CLI
+        run: bun typecheck
+
+      - name: Run package, tamper, and convergence contracts
+        working-directory: packages/opencode
+        run: bun test src/w1/auth.test.ts src/w1/runtime.test.ts src/w1/cli.test.ts src/w1/engine.test.ts src/w1/npm-package.test.ts
+
+      - name: Build macOS native packages
+        working-directory: packages/opencode
+        env:
+          W1_RUNTIME_BUNDLE_DIR: ${{ github.workspace }}/.w1-harness/vscode-extension/out/harness
+        run: |
+          bun run script/build.ts --target=darwin-arm64 --skip-embed-web-ui
+          bun run script/build.ts --target=darwin-x64 --keep-dist --skip-install --skip-embed-web-ui
+          bun run script/build.ts --target=darwin-x64-baseline --keep-dist --skip-install --skip-embed-web-ui
+
+      - name: Stage and verify no-postinstall packages
+        working-directory: packages/opencode
+        env:
+          W1_NPM_ALLOW_PUBLIC_RUNTIME: "1"
+          W1_CLI_REF: ${{ github.sha }}
+        run: |
+          bun run script/package-w1-npm.ts
+          test -x dist/npm/w1-cli/bin/w1
+          test -s dist/npm/w1-cli-darwin-arm64/w1-runtime-manifest.json
+          test -s dist/npm/w1-cli-darwin-arm64/bin/w1-runtime/w1-engine.mjs
+          test -s dist/npm/w1-cli-darwin-arm64/bin/w1-runtime/w1-engine-client.mjs
+          test -s dist/npm/w1-cli-darwin-arm64/bin/w1-runtime/run-stream.mjs
+          test -d dist/npm/w1-cli-darwin-arm64/assets/skills
+          test -d dist/npm/w1-cli-darwin-arm64/assets/plugins
+          test -d dist/npm/w1-cli-darwin-arm64/bin/w1-runtime/standard_fonts
+          test -d dist/npm/w1-cli-darwin-arm64/bin/w1-runtime/node_modules/@napi-rs
+          dist/npm/w1-cli-darwin-arm64/bin/w1 --version
+          W1_ENGINE_STATE_DIR="$RUNNER_TEMP/w1-engine-status" dist/npm/w1-cli-darwin-arm64/bin/w1 engine status
+          for package in dist/npm/w1-cli-* dist/npm/w1-cli; do npm pack "$package" --dry-run --json >/dev/null; done
+
+      - name: Upload verified package tree
+        uses: actions/upload-artifact@v4
+        with:
+          name: w1-cli-npm-0.1.4-next.0-macos
+          path: packages/opencode/dist/npm
+          if-no-files-found: error
+          retention-days: 7
