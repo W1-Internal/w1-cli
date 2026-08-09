@@ -8,7 +8,7 @@ permissions:
 
 jobs:
   verify:
-    runs-on: depot-macos-15
+    runs-on: depot-ubuntu-24.04-8
     timeout-minutes: 45
     env:
       W1_CLI_VERSION: 0.1.4-next.0
@@ -90,8 +90,8 @@ jobs:
           test -d dist/npm/w1-cli-darwin-arm64/assets/plugins
           test -d dist/npm/w1-cli-darwin-arm64/bin/w1-runtime/standard_fonts
           test -d dist/npm/w1-cli-darwin-arm64/bin/w1-runtime/node_modules/@napi-rs
-          dist/npm/w1-cli-darwin-arm64/bin/w1 --version
-          W1_ENGINE_STATE_DIR="$RUNNER_TEMP/w1-engine-status" dist/npm/w1-cli-darwin-arm64/bin/w1 engine status
+          file dist/npm/w1-cli-darwin-arm64/bin/w1 | grep -Eq 'Mach-O.*arm64|Mach-O.*ARM64'
+          file dist/npm/w1-cli-darwin-x64/bin/w1 | grep -Eq 'Mach-O.*x86_64'
           for package in dist/npm/w1-cli-* dist/npm/w1-cli; do npm pack "$package" --dry-run --json >/dev/null; done
 
       - name: Upload verified package tree

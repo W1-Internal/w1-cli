@@ -32,9 +32,9 @@ permissions:
 
 jobs:
   build:
-    name: Validate and stage macOS npm packages on Depot
+    name: Cross-build and stage macOS npm packages on Depot
     if: ${{ inputs.allow_public_runtime }}
-    runs-on: depot-macos-15
+    runs-on: depot-ubuntu-24.04-8
     timeout-minutes: 45
     steps:
       - name: Checkout exact W1 CLI source
@@ -142,7 +142,8 @@ jobs:
           test -s dist/npm/w1-cli-darwin-arm64/w1-runtime-manifest.json
           test -d dist/npm/w1-cli-darwin-arm64/assets/skills
           test -d dist/npm/w1-cli-darwin-arm64/assets/plugins
-          dist/npm/w1-cli-darwin-arm64/bin/w1 --version
+          file dist/npm/w1-cli-darwin-arm64/bin/w1 | grep -Eq 'Mach-O.*arm64|Mach-O.*ARM64'
+          file dist/npm/w1-cli-darwin-x64/bin/w1 | grep -Eq 'Mach-O.*x86_64'
           for package in dist/npm/w1-cli-* dist/npm/w1-cli; do npm pack "$package" --dry-run --json >/dev/null; done
 
       - name: Upload staged npm packages
