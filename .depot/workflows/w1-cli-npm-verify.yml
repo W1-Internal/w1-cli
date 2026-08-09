@@ -177,13 +177,19 @@ jobs:
               --prompt "Reply once to confirm the packaged actor is running." >"$test_root/actor.log" 2>&1
           grep -q 'Packaged actor turn passed.' "$test_root/actor.log"
 
-      - name: Upload extracted-transport Linux launcher probe
+      - name: Pack Linux launcher transport probe
+        working-directory: packages/opencode
+        run: |
+          rm -rf dist/npm-linux-transport
+          mkdir -p dist/npm-linux-transport
+          npm pack dist/npm/w1-cli-linux-x64 --pack-destination dist/npm-linux-transport >/dev/null
+          npm pack dist/npm/w1-cli --pack-destination dist/npm-linux-transport >/dev/null
+
+      - name: Upload Linux launcher transport probe
         uses: actions/upload-artifact@v4
         with:
           name: w1-cli-npm-0.1.4-next.0-linux-transport-probe
-          path: |
-            packages/opencode/dist/npm/w1-cli
-            packages/opencode/dist/npm/w1-cli-linux-x64
+          path: packages/opencode/dist/npm-linux-transport
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 2
@@ -201,12 +207,17 @@ jobs:
             const names = Object.keys(meta.optionalDependencies || {})
             if (!names.length || names.some((name) => !name.startsWith("w1-cli-darwin-"))) process.exit(1)
           '
+          rm -rf dist/npm-artifact
+          mkdir -p dist/npm-artifact
+          for package in dist/npm/w1-cli-darwin-* dist/npm/w1-cli; do
+            npm pack "$package" --pack-destination dist/npm-artifact >/dev/null
+          done
 
       - name: Upload verified package tree
         uses: actions/upload-artifact@v4
         with:
           name: w1-cli-npm-0.1.4-next.0-macos
-          path: packages/opencode/dist/npm
+          path: packages/opencode/dist/npm-artifact
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
@@ -236,13 +247,19 @@ jobs:
 
       - name: Validate extracted Mac manifests including hidden files
         run: |
+          mkdir -p mac-packages
+          for tarball in mac-artifact/*.tgz; do
+            name="$(tar -xOf "$tarball" package/package.json | node -e 'let value=""; process.stdin.on("data", chunk => value += chunk); process.stdin.on("end", () => process.stdout.write(JSON.parse(value).name))')"
+            mkdir -p "mac-packages/$name"
+            tar -xzf "$tarball" -C "mac-packages/$name" --strip-components=1
+          done
           node - <<'NODE'
           const crypto = require("node:crypto")
           const fs = require("node:fs")
           const path = require("node:path")
-          const roots = fs.readdirSync("mac-artifact")
+          const roots = fs.readdirSync("mac-packages")
             .filter((name) => name.startsWith("w1-cli-darwin-"))
-            .map((name) => path.join("mac-artifact", name))
+            .map((name) => path.join("mac-packages", name))
           if (roots.length !== 3) throw new Error(`expected three Darwin packages, got ${roots.length}`)
           const filesBelow = (root, relative) => fs.readdirSync(path.join(root, relative)).sort().flatMap((name) => {
             const child = path.posix.join(relative, name)
@@ -269,7 +286,7 @@ jobs:
             }
             console.log(`W1_EXTRACTED_MANIFEST ${JSON.stringify({ package: manifest.package.name, files: actual.length, cliRef: manifest.build.cli, engineRef: manifest.build.engine })}`)
           }
-          const meta = JSON.parse(fs.readFileSync("mac-artifact/w1-cli/package.json", "utf8"))
+          const meta = JSON.parse(fs.readFileSync("mac-packages/w1-cli/package.json", "utf8"))
           if (Object.keys(meta.optionalDependencies || {}).some((name) => !name.startsWith("w1-cli-darwin-"))) {
             throw new Error("Mac artifact meta package references a non-Darwin package")
           }
@@ -278,11 +295,7 @@ jobs:
       - name: Install downloaded Linux packages and invoke the real meta launcher
         run: |
           prefix="$RUNNER_TEMP/w1-extracted-prefix"
-          tarballs="$RUNNER_TEMP/w1-extracted-tarballs"
-          mkdir -p "$tarballs"
-          npm pack "$GITHUB_WORKSPACE/linux-artifact/w1-cli-linux-x64" --pack-destination "$tarballs" >/dev/null
-          npm pack "$GITHUB_WORKSPACE/linux-artifact/w1-cli" --pack-destination "$tarballs" >/dev/null
           npm install --prefix "$prefix" --ignore-scripts \
-            "$tarballs/w1-cli-linux-x64-0.1.4-next.0.tgz" \
-            "$tarballs/w1-cli-0.1.4-next.0.tgz"
+            "$GITHUB_WORKSPACE/linux-artifact/w1-cli-linux-x64-0.1.4-next.0.tgz" \
+            "$GITHUB_WORKSPACE/linux-artifact/w1-cli-0.1.4-next.0.tgz"
           test "$("$prefix/node_modules/.bin/w1" --version)" = "0.1.4-next.0"
