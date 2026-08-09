@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import { $ } from "bun"
+import { existsSync } from "node:fs"
 import { cp, mkdir } from "node:fs/promises"
 import path from "path"
 import { fileURLToPath } from "url"
@@ -240,7 +241,7 @@ for (const item of targets) {
   const packagedRuntime = path.join(packagedRoot, "bin", "w1-runtime")
   await mkdir(packagedRuntime, { recursive: true })
   await cp(w1RuntimeRoot, packagedRuntime, { recursive: true, force: true })
-  if (await Bun.file(path.join(w1RuntimeAssetsRoot, "skills")).exists()) {
+  if (existsSync(path.join(w1RuntimeAssetsRoot, "skills"))) {
     await mkdir(path.join(packagedRoot, "assets"), { recursive: true })
     await cp(w1RuntimeAssetsRoot, path.join(packagedRoot, "assets"), { recursive: true, force: true })
   }
