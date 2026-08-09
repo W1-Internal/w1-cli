@@ -43,6 +43,10 @@ jobs:
           test/cli/help/help-snapshots.test.ts
           test/cli/smokes/read-only.test.ts
 
+      - name: Prove OpenCode subprocess runtime remains intact
+        working-directory: packages/opencode
+        run: bun test test/cli/run/run-process.test.ts
+
       - name: Run focused footer rendering contracts
         working-directory: packages/opencode
         run: >-
