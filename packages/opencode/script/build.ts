@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import { $ } from "bun"
+import { cp, mkdir } from "node:fs/promises"
 import path from "path"
 import { fileURLToPath } from "url"
 import { createSolidTransformPlugin } from "@opentui/solid/bun-plugin"
@@ -33,6 +34,7 @@ const w1RuntimeRoot = path.resolve(
 const w1RuntimeEntrypoint = path.join(w1RuntimeRoot, "run-stream.mjs")
 const w1EngineEntrypoint = path.join(w1RuntimeRoot, "w1-engine.mjs")
 const w1EngineBuildFile = path.join(w1RuntimeRoot, "BUILD_ID")
+const w1RuntimeAssetsRoot = path.resolve(w1RuntimeRoot, "../..", "assets")
 const w1BuildID = (await $`git rev-parse HEAD`.text()).trim()
 const w1BuildDirty = (await $`git status --porcelain`.text()).trim().length > 0
 if (!(await Bun.file(w1RuntimeEntrypoint).exists())) {
@@ -234,12 +236,13 @@ for (const item of targets) {
     },
   })
 
-  await $`mkdir -p dist/${name}/bin/w1-runtime`
-  await $`cp ${w1RuntimeEntrypoint} dist/${name}/bin/w1-runtime/run-stream.mjs`
-  await $`cp ${w1EngineEntrypoint} dist/${name}/bin/w1-runtime/w1-engine.mjs`
-  await $`cp ${w1EngineBuildFile} dist/${name}/bin/w1-runtime/BUILD_ID`
-  if (await Bun.file(path.join(w1RuntimeRoot, "standard_fonts", "LICENSE_FOXIT")).exists()) {
-    await $`cp -R ${path.join(w1RuntimeRoot, "standard_fonts")} dist/${name}/bin/w1-runtime/standard_fonts`
+  const packagedRoot = path.join("dist", name)
+  const packagedRuntime = path.join(packagedRoot, "bin", "w1-runtime")
+  await mkdir(packagedRuntime, { recursive: true })
+  await cp(w1RuntimeRoot, packagedRuntime, { recursive: true, force: true })
+  if (await Bun.file(path.join(w1RuntimeAssetsRoot, "skills")).exists()) {
+    await mkdir(path.join(packagedRoot, "assets"), { recursive: true })
+    await cp(w1RuntimeAssetsRoot, path.join(packagedRoot, "assets"), { recursive: true, force: true })
   }
 
   // Smoke test: only run if binary is for current platform
