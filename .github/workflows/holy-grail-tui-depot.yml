@@ -8,12 +8,20 @@ permissions:
 
 jobs:
   verify:
-    name: W1 product TUI
-    runs-on: ubuntu-24.04
+    name: W1 Engine-backed product TUI
+    runs-on: depot-macos-15
     timeout-minutes: 35
     steps:
       - name: Checkout exact branch
         uses: actions/checkout@v4
+
+      - name: Checkout frozen W1 Engine source
+        uses: actions/checkout@v4
+        with:
+          repository: W1-Internal/w1
+          ref: 02d509c14d3927acf9173428b8df154ffc914683
+          path: .w1-engine-source
+          persist-credentials: false
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -25,6 +33,15 @@ jobs:
         with:
           bun-version: 1.3.14
 
+      - name: Build frozen W1 Engine and actor bundle
+        run: |
+          npm ci --prefix .w1-engine-source
+          npm ci --prefix .w1-engine-source/vscode-extension
+          npm --prefix .w1-engine-source/vscode-extension run vscode:prepublish
+          test -s .w1-engine-source/vscode-extension/out/harness/w1-engine.mjs
+          test -s .w1-engine-source/vscode-extension/out/harness/run-stream.mjs
+          test -s .w1-engine-source/vscode-extension/out/harness/BUILD_ID
+
       - name: Install locked dependencies
         run: bun install --frozen-lockfile
 
@@ -33,7 +50,7 @@ jobs:
 
       - name: Run focused W1 command contracts
         working-directory: packages/opencode
-        run: bun test src/w1/cli.test.ts
+        run: bun test src/w1/auth.test.ts src/w1/runtime.test.ts src/w1/engine.test.ts src/w1/cli.test.ts
 
       - name: Prove W1 and OpenCode keep separate CLI entrypoints
         working-directory: packages/opencode
@@ -78,6 +95,22 @@ jobs:
       - name: Run complete footer rendering contracts
         working-directory: packages/opencode
         run: bun test test/cli/run/footer.view.test.tsx
+
+      - name: Build native macOS W1 CLI with frozen Engine
+        working-directory: packages/opencode
+        env:
+          W1_RUNTIME_BUNDLE_DIR: ${{ github.workspace }}/.w1-engine-source/vscode-extension/out/harness
+        run: bun run script/build.ts --single --skip-embed-web-ui
+
+      - name: Verify product entrypoints and bundled daemon
+        run: |
+          bin_dir="$(find packages/opencode/dist -maxdepth 2 -type d -path '*/w1-cli-darwin-*/bin' -print -quit)"
+          test -n "$bin_dir"
+          test -x "$bin_dir/w1"
+          test -s "$bin_dir/w1-runtime/w1-engine.mjs"
+          test -s "$bin_dir/w1-runtime/run-stream.mjs"
+          test -s "$bin_dir/w1-runtime/BUILD_ID"
+          "$bin_dir/w1" --version
 
       - name: Observe full OpenCode package suite (main baseline is red)
         continue-on-error: true

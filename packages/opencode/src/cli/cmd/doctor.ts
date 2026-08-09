@@ -1,5 +1,7 @@
 import { cmd } from "./cmd"
-import { W1Runtime, type RuntimeClient } from "@/w1/runtime"
+import { W1Runtime } from "@/w1/runtime"
+import { EngineClient, engineClientVersion, resolveEngine, type ThreadSummary } from "@/w1/engine"
+import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import path from "path"
 import { stat } from "fs/promises"
 import { W1Auth } from "@/w1/auth"
@@ -81,11 +83,30 @@ async function diagnostics(directory: string) {
       : { name: "runtime", status: "fail", detail: "run-stream.mjs was not found" },
   )
 
-  if (runtime) {
-    let client: RuntimeClient | undefined
+  const engine = await resolveEngine()
+  checks.push(
+    engine
+      ? { name: "engine", status: "ok", detail: `${engine.source}: ${engine.enginePath}` }
+      : { name: "engine", status: "fail", detail: "w1-engine.mjs was not found" },
+  )
+
+  if (engine) {
+    const client = new EngineClient()
     try {
-      client = await W1Runtime.startRuntime({ cwd: directory, onFrame() {}, onStderr() {} })
-      checks.push({ name: "handshake", status: "ok", detail: "runtime emitted READY" })
+      await client.connect({ location: engine, clientVersion: engineClientVersion(InstallationVersion) })
+      checks.push({ name: "handshake", status: "ok", detail: `daemon protocol v1 · build ${engine.buildId}` })
+      const auth = await client.request("auth.snapshot", {}) as { state?: string }
+      checks.push({
+        name: "engine auth",
+        status: auth.state === "signed_in" ? "ok" : "fail",
+        detail: auth.state === "signed_in" ? "daemon sees the shared W1 session" : "daemon is signed out",
+      })
+      const threads = await client.request("engine.threads.list", { workspacePath: directory }) as ThreadSummary[]
+      checks.push({
+        name: "history",
+        status: "ok",
+        detail: `${threads.length} workspace thread${threads.length === 1 ? "" : "s"} · ${threads.filter((item) => item.state === "running").length} running`,
+      })
     } catch (error) {
       checks.push({
         name: "handshake",
@@ -93,7 +114,7 @@ async function diagnostics(directory: string) {
         detail: error instanceof Error ? error.message : String(error),
       })
     } finally {
-      await client?.stop()
+      client.close()
     }
   }
 

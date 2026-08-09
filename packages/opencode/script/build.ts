@@ -29,10 +29,18 @@ const w1RuntimeRoot = path.resolve(
   process.env.W1_RUNTIME_BUNDLE_DIR ?? path.join(dir, "../../../harness/vscode-extension/out/harness"),
 )
 const w1RuntimeEntrypoint = path.join(w1RuntimeRoot, "run-stream.mjs")
+const w1EngineEntrypoint = path.join(w1RuntimeRoot, "w1-engine.mjs")
+const w1EngineBuildFile = path.join(w1RuntimeRoot, "BUILD_ID")
 const w1BuildID = (await $`git rev-parse HEAD`.text()).trim()
 const w1BuildDirty = (await $`git status --porcelain`.text()).trim().length > 0
 if (!(await Bun.file(w1RuntimeEntrypoint).exists())) {
   throw new Error(`W1 runtime bundle is missing: ${w1RuntimeEntrypoint}`)
+}
+if (!(await Bun.file(w1EngineEntrypoint).exists())) {
+  throw new Error(`W1 Engine bundle is missing: ${w1EngineEntrypoint}`)
+}
+if (!(await Bun.file(w1EngineBuildFile).exists())) {
+  throw new Error(`W1 Engine build stamp is missing: ${w1EngineBuildFile}`)
 }
 
 const createEmbeddedWebUIBundle = async () => {
@@ -215,9 +223,8 @@ for (const item of targets) {
 
   await $`mkdir -p dist/${name}/bin/w1-runtime`
   await $`cp ${w1RuntimeEntrypoint} dist/${name}/bin/w1-runtime/run-stream.mjs`
-  if (await Bun.file(path.join(w1RuntimeRoot, "BUILD_ID")).exists()) {
-    await $`cp ${path.join(w1RuntimeRoot, "BUILD_ID")} dist/${name}/bin/w1-runtime/BUILD_ID`
-  }
+  await $`cp ${w1EngineEntrypoint} dist/${name}/bin/w1-runtime/w1-engine.mjs`
+  await $`cp ${w1EngineBuildFile} dist/${name}/bin/w1-runtime/BUILD_ID`
   if (await Bun.file(path.join(w1RuntimeRoot, "standard_fonts", "LICENSE_FOXIT")).exists()) {
     await $`cp -R ${path.join(w1RuntimeRoot, "standard_fonts")} dist/${name}/bin/w1-runtime/standard_fonts`
   }

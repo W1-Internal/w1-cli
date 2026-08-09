@@ -111,6 +111,7 @@ test.skipIf(process.platform === "win32")("interactive W1 uses the product TUI a
   const runtime = path.join(root, "mock-runtime.mjs")
   const received = path.join(root, "received-turn.json")
   const image = path.join(root, "reference.png")
+  const engine = path.join(import.meta.dir, "fixture-engine.mjs")
   await mkdir(path.join(root, ".w1"), { recursive: true })
   await Bun.write(path.join(root, ".w1", "auth.json"), JSON.stringify({ token: "w1s_fixture" }))
   await Bun.write(image, Buffer.from("89504e470d0a1a0a", "hex"))
@@ -144,7 +145,15 @@ test.skipIf(process.platform === "win32")("interactive W1 uses the product TUI a
       // tsconfig. The project under test is still `root` via the positional argument above.
       cwd: path.resolve(import.meta.dir, "../.."),
       env: Object.fromEntries(
-        Object.entries({ ...process.env, HOME: root, USERPROFILE: root, W1_RUNTIME_PATH: runtime }).filter(
+        Object.entries({
+          ...process.env,
+          HOME: root,
+          USERPROFILE: root,
+          W1_RUNTIME_PATH: runtime,
+          W1_ENGINE_PATH: engine,
+          W1_FIXTURE_RECEIVED: received,
+          W1_FIXTURE_EXIT_ON_CLOSE: "1",
+        }).filter(
           (entry): entry is [string, string] => entry[1] !== undefined,
         ),
       ),
@@ -168,10 +177,15 @@ test.skipIf(process.platform === "win32")("interactive W1 uses the product TUI a
     }
     expect(output).not.toContain("line three")
     const turn = JSON.parse(await Bun.file(received).text())
-    expect(turn).toMatchObject({ provider: "w1", images: [expect.stringMatching(/^data:image\/png;base64,/)] })
+    expect(turn).toMatchObject({
+      attachmentIds: [expect.stringMatching(/^sha256:/)],
+      workerRequest: { runtimeMode: "approval-required", first: true },
+    })
+    expect(turn).not.toHaveProperty("images")
+    expect(turn.workerRequest).not.toHaveProperty("history")
     for (const expected of ["audit this", path.join(".w1", "attachments")]) {
-      if (!turn.task.includes(expected)) {
-        throw new Error(`runtime turn task missing ${JSON.stringify(expected)}; task=${JSON.stringify(turn.task)}`)
+      if (!turn.text.includes(expected)) {
+        throw new Error(`engine turn text missing ${JSON.stringify(expected)}; text=${JSON.stringify(turn.text)}`)
       }
     }
     child.write("exit\r")
