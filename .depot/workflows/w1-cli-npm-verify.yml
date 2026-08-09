@@ -113,6 +113,23 @@ jobs:
           test -s dist/npm/w1-cli-darwin-x64/bin/w1-runtime/node_modules/@napi-rs/canvas-darwin-x64/skia.darwin-x64.node
           test -s dist/npm/w1-cli-linux-x64/bin/w1-runtime/node_modules/@napi-rs/canvas-linux-x64-gnu/skia.linux-x64-gnu.node
           test -s dist/npm/w1-cli-linux-x64-musl/bin/w1-runtime/node_modules/@napi-rs/canvas-linux-x64-musl/skia.linux-x64-musl.node
+          node - <<'NODE'
+          const fs = require("node:fs")
+          const targets = {
+            "w1-cli-darwin-arm64": "bin/w1-runtime/node_modules/@napi-rs/canvas-darwin-arm64/skia.darwin-arm64.node",
+            "w1-cli-darwin-x64": "bin/w1-runtime/node_modules/@napi-rs/canvas-darwin-x64/skia.darwin-x64.node",
+            "w1-cli-linux-x64": "bin/w1-runtime/node_modules/@napi-rs/canvas-linux-x64-gnu/skia.linux-x64-gnu.node",
+            "w1-cli-linux-x64-musl": "bin/w1-runtime/node_modules/@napi-rs/canvas-linux-x64-musl/skia.linux-x64-musl.node",
+          }
+          for (const [name, expectedPath] of Object.entries(targets)) {
+            const manifest = JSON.parse(fs.readFileSync(`dist/npm/${name}/w1-runtime-manifest.json`, "utf8"))
+            const nativeEntries = Object.entries(manifest.files).filter(([file]) => file.endsWith(".node"))
+            if (nativeEntries.length !== 1 || nativeEntries[0][0] !== expectedPath) process.exit(1)
+            const [file, record] = nativeEntries[0]
+            if (!/^[0-9a-f]{64}$/.test(record.sha256) || !Number.isSafeInteger(record.bytes) || record.bytes <= 0) process.exit(1)
+            console.log(`W1_NATIVE_MANIFEST ${JSON.stringify({ name, file, ...record })}`)
+          }
+          NODE
           file dist/npm/w1-cli-darwin-arm64/bin/w1 | grep -Eq 'Mach-O.*arm64|Mach-O.*ARM64'
           file dist/npm/w1-cli-darwin-x64/bin/w1 | grep -Eq 'Mach-O.*x86_64'
           for package in dist/npm/w1-cli-* dist/npm/w1-cli; do npm pack "$package" --dry-run --json >/dev/null; done

@@ -42,6 +42,14 @@ package contains exactly one canvas binary matching its OS, architecture and Lin
 builds temporary Linux glibc and musl packages so it can execute the compiled install and validate
 both libc contracts. Those probes are removed before the final Mac-first dogfood artifact is staged.
 
+The controlled Apple Silicon dogfood gate must load the installed native module before the first W1
+turn. After installing the artifact, run:
+
+```bash
+node -e 'const canvas=require(process.argv[1]); const image=canvas.createCanvas(1,1); if (image.width!==1) process.exit(1)' \
+  "$(npm root -g)/w1-cli-darwin-arm64/bin/w1-runtime/node_modules/@napi-rs/canvas"
+```
+
 The shared Engine converges by protocol and release version: an older idle daemon is replaced by the
 new package, an active daemon refuses automatic replacement, and an older CLI can keep using a newer
 compatible daemon. A different build claiming the same package version is treated as an integrity
