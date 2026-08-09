@@ -12,7 +12,7 @@ jobs:
     timeout-minutes: 45
     env:
       W1_CLI_VERSION: 0.1.4-next.0
-      W1_HARNESS_REF: 1ba5e6f89360c9364c37318ff401fd7d88ecd288
+      W1_HARNESS_REF: a893edf832e8aa4a41d3aa78c3f8057818727fca
     steps:
       - name: Checkout CLI branch
         uses: actions/checkout@v6
