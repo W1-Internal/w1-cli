@@ -1,34 +1,41 @@
 import yargs from "yargs"
 import { hideBin } from "yargs/helpers"
+import { RunCommand } from "./cli/cmd/run"
+import { GenerateCommand } from "./cli/cmd/generate"
+import { ConsoleCommand } from "./cli/cmd/account"
+import { ProvidersCommand } from "./cli/cmd/providers"
+import { AgentCommand } from "./cli/cmd/agent"
+import { UpgradeCommand } from "./cli/cmd/upgrade"
+import { UninstallCommand } from "./cli/cmd/uninstall"
+import { ModelsCommand } from "./cli/cmd/models"
 import { UI } from "./cli/ui"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { FormatError } from "./cli/error"
+import { ServeCommand } from "./cli/cmd/serve"
+import { DebugCommand } from "./cli/cmd/debug"
+import { StatsCommand } from "./cli/cmd/stats"
+import { McpCommand } from "./cli/cmd/mcp"
+import { GithubCommand } from "./cli/cmd/github"
+import { ExportCommand } from "./cli/cmd/export"
+import { ImportCommand } from "./cli/cmd/import"
+import { AttachCommand } from "./cli/cmd/attach"
+import { TuiThreadCommand } from "./cli/cmd/tui"
+import { AcpCommand } from "./cli/cmd/acp"
 import { EOL } from "os"
+import { WebCommand } from "./cli/cmd/web"
+import { PrCommand } from "./cli/cmd/pr"
+import { SessionCommand } from "./cli/cmd/session"
+import { DbCommand } from "./cli/cmd/db"
 import { errorMessage } from "./util/error"
-import { pathToFileURL } from "url"
-import { W1Command } from "./cli/cmd/w1"
-import { DoctorCommand } from "./cli/cmd/doctor"
-import { AuthCommand, LoginCommand, LogoutCommand } from "./cli/cmd/w1-auth"
+import { PluginCommand } from "./cli/cmd/plug"
+import { Heap } from "./cli/heap"
 
 const args = hideBin(process.argv)
 
-if (args[0] === "__runtime") {
-  const runtimePath = args[1]
-  if (!runtimePath) throw new Error("W1 runtime path is missing.")
-  const runtime = (await import(pathToFileURL(runtimePath).href)) as {
-    serve?: () => Promise<void>
-    installRuntimeSignalHandlers?: () => () => void
-  }
-  if (!runtime.serve) throw new Error("Bundled W1 runtime does not export serve().")
-  const removeSignalHandlers = runtime.installRuntimeSignalHandlers?.()
-  await runtime.serve().finally(() => removeSignalHandlers?.())
-  process.exit(0)
-}
-
 function show(out: string) {
   const text = out.trimStart()
-  if (!text.startsWith("w1 ")) {
-    process.stderr.write("W1" + EOL + EOL)
+  if (!text.startsWith("opencode ")) {
+    process.stderr.write(UI.logo() + EOL + EOL)
     process.stderr.write(text + EOL)
     return
   }
@@ -37,24 +44,63 @@ function show(out: string) {
 
 const cli = yargs(args)
   .parserConfiguration({ "populate--": true })
-  .scriptName("w1")
+  .scriptName("opencode")
   .wrap(100)
   .help("help", "show help")
   .alias("help", "h")
   .version("version", "show version number", InstallationVersion)
   .alias("version", "v")
-  .middleware(async () => {
+  .option("print-logs", {
+    describe: "print logs to stderr",
+    type: "boolean",
+  })
+  .option("log-level", {
+    describe: "log level",
+    type: "string",
+    choices: ["DEBUG", "INFO", "WARN", "ERROR"],
+  })
+  .option("pure", {
+    describe: "run without external plugins",
+    type: "boolean",
+  })
+  .middleware(async (opts) => {
+    if (opts.printLogs) process.env.OPENCODE_PRINT_LOGS = "1"
+    if (opts.logLevel) process.env.OPENCODE_LOG_LEVEL = opts.logLevel
+    if (opts.pure) {
+      process.env.OPENCODE_PURE = "1"
+    }
+
+    Heap.start()
+
     process.env.AGENT = "1"
-    process.env.W1 = "1"
-    process.env.W1_PID = String(process.pid)
+    process.env.OPENCODE = "1"
+    process.env.OPENCODE_PID = String(process.pid)
   })
   .usage("")
   .completion("completion", "generate shell completion script")
-  .command(AuthCommand)
-  .command(LoginCommand)
-  .command(LogoutCommand)
-  .command(DoctorCommand)
-  .command(W1Command)
+  .command(AcpCommand)
+  .command(McpCommand)
+  .command(TuiThreadCommand)
+  .command(AttachCommand)
+  .command(RunCommand)
+  .command(GenerateCommand)
+  .command(DebugCommand)
+  .command(ConsoleCommand)
+  .command(ProvidersCommand)
+  .command(AgentCommand)
+  .command(UpgradeCommand)
+  .command(UninstallCommand)
+  .command(ServeCommand)
+  .command(WebCommand)
+  .command(ModelsCommand)
+  .command(StatsCommand)
+  .command(ExportCommand)
+  .command(ImportCommand)
+  .command(GithubCommand)
+  .command(PrCommand)
+  .command(SessionCommand)
+  .command(PluginCommand)
+  .command(DbCommand)
   .fail((msg, err) => {
     if (
       msg?.startsWith("Unknown argument") ||

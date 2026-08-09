@@ -28,7 +28,7 @@ test("the W1 command completes a streamed turn through the real stdio adapter", 
 
   try {
     const child = Bun.spawn({
-      cmd: [process.execPath, path.resolve(import.meta.dir, "../index.ts"), root, "--prompt", "hello"],
+      cmd: [process.execPath, path.resolve(import.meta.dir, "../w1-index.ts"), root, "--prompt", "hello"],
       cwd: root,
       env: { ...process.env, HOME: root, USERPROFILE: root, W1_RUNTIME_PATH: runtime },
       stdin: "ignore",
@@ -82,7 +82,7 @@ test("--yolo enables full access and shows activity without exposing reasoning",
 
   try {
     const child = Bun.spawn({
-      cmd: [process.execPath, path.resolve(import.meta.dir, "../index.ts"), root, "--prompt", "hello", "--yolo"],
+      cmd: [process.execPath, path.resolve(import.meta.dir, "../w1-index.ts"), root, "--prompt", "hello", "--yolo"],
       cwd: root,
       env: { ...process.env, HOME: root, USERPROFILE: root, W1_RUNTIME_PATH: runtime },
       stdin: "ignore",
@@ -136,7 +136,7 @@ test.skipIf(process.platform === "win32")("interactive W1 uses the product TUI a
   )
 
   try {
-    const child = Pty.spawn(process.execPath, [path.resolve(import.meta.dir, "../index.ts"), root, "--image", image], {
+    const child = Pty.spawn(process.execPath, [path.resolve(import.meta.dir, "../w1-index.ts"), root, "--image", image], {
       name: "xterm-256color",
       cols: 110,
       rows: 34,
@@ -225,7 +225,7 @@ test.skipIf(process.platform === "win32")(
     )
 
     try {
-      const child = Pty.spawn(process.execPath, [path.resolve(import.meta.dir, "../index.ts"), root, "--plain"], {
+      const child = Pty.spawn(process.execPath, [path.resolve(import.meta.dir, "../w1-index.ts"), root, "--plain"], {
         name: "xterm-256color",
         cols: 100,
         rows: 30,
@@ -274,7 +274,7 @@ test.skipIf(process.platform === "win32")("Ctrl+C closes W1 and its runtime duri
   )
 
   try {
-    const child = Pty.spawn(process.execPath, [path.resolve(import.meta.dir, "../index.ts"), root, "--plain"], {
+    const child = Pty.spawn(process.execPath, [path.resolve(import.meta.dir, "../w1-index.ts"), root, "--plain"], {
       name: "xterm-256color",
       cols: 100,
       rows: 30,

@@ -35,6 +35,14 @@ jobs:
         working-directory: packages/opencode
         run: bun test src/w1/cli.test.ts
 
+      - name: Prove W1 and OpenCode keep separate CLI entrypoints
+        working-directory: packages/opencode
+        run: >-
+          bun test
+          test/cli/mcp-add.test.ts
+          test/cli/help/help-snapshots.test.ts
+          test/cli/smokes/read-only.test.ts
+
       - name: Run focused footer rendering contracts
         working-directory: packages/opencode
         run: >-
