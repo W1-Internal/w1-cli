@@ -17,6 +17,7 @@ type CommandEntry =
   | (PanelEntry & { action: "editor" })
   | (PanelEntry & { action: "skill" })
   | (PanelEntry & { action: "queued" })
+  | (PanelEntry & { action: "resume" })
   | (PanelEntry & { action: "subagent" })
   | (PanelEntry & { action: "variant.cycle" })
   | (PanelEntry & { action: "variant.list" })
@@ -344,6 +345,8 @@ export function RunCommandMenuBody(props: {
   onSkill: () => void
   onSubagent: () => void
   onQueued: () => void
+  onResume?: () => void
+  showResume?: boolean
   onVariant: () => void
   onVariantCycle: () => void
   onCommand: (name: string) => void
@@ -355,7 +358,7 @@ export function RunCommandMenuBody(props: {
   const skills = createMemo(() => (props.commands() ?? []).filter((item) => item.source === "skill"))
   const activeSubagentCount = createMemo(() => props.subagents().filter((item) => item.status === "running").length)
   const entries = createMemo<CommandEntry[]>(() => {
-    const builtins = ["editor", "new"]
+    const builtins = ["editor", "new", ...(props.showResume ? ["resume"] : [])]
     const session: CommandEntry[] = [
       {
         action: "editor",
@@ -387,6 +390,17 @@ export function RunCommandMenuBody(props: {
         footer: "/new",
         keywords: "new session clear",
       },
+      ...(props.showResume
+        ? [
+            {
+              action: "resume" as const,
+              category: "Session",
+              display: "Resume session",
+              footer: "/resume",
+              keywords: "resume switch recent session thread",
+            },
+          ]
+        : []),
     ]
     const prompt: CommandEntry[] =
       props.commands() === undefined || skills().length > 0
@@ -491,6 +505,11 @@ export function RunCommandMenuBody(props: {
 
     if (item.action === "queued") {
       props.onQueued()
+      return
+    }
+
+    if (item.action === "resume") {
+      props.onResume?.()
       return
     }
 

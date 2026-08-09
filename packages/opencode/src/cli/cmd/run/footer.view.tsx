@@ -23,6 +23,7 @@ import {
 } from "./footer.command"
 import { FOOTER_MENU_ROWS, RunFooterMenu } from "./footer.menu"
 import { RunFooterSubagentBody } from "./footer.subagent"
+import { RunThreadSelectBody } from "./footer.thread"
 import { RunPromptBody, createPromptState } from "./footer.prompt"
 import { RunPermissionBody } from "./footer.permission"
 import { RunQuestionBody } from "./footer.question"
@@ -40,6 +41,10 @@ import type {
   FooterQueuedPrompt,
   FooterState,
   FooterSubagentState,
+  FooterThreadCatalog,
+  FooterThreadCatalogRequest,
+  FooterThreadNew,
+  FooterThreadSelect,
   FooterView,
   PermissionReply,
   QuestionReject,
@@ -87,6 +92,7 @@ type RunFooterViewProps = {
   view?: () => FooterView
   subagent?: () => FooterSubagentState
   queuedPrompts?: () => FooterQueuedPrompt[]
+  threads?: () => FooterThreadCatalog
   theme: () => RunTheme
   diffStyle?: RunDiffStyle
   tuiConfig: RunTuiConfig
@@ -111,6 +117,9 @@ type RunFooterViewProps = {
   onLayout: (input: { route: FooterPromptRoute; autocomplete: boolean; subagentRows: number }) => void
   onStatus: (text: string) => void
   onSubagentSelect?: (sessionID: string | undefined) => void
+  onThreadCatalogRequest?: FooterThreadCatalogRequest
+  onThreadSelect?: FooterThreadSelect
+  onThreadNew?: FooterThreadNew
   onQueuedRemove: (messageID: string) => Promise<boolean>
   onPasteAttachment?: (text: string) => Promise<RunPromptPaste | undefined>
   brand?: "w1"
@@ -136,10 +145,12 @@ export function RunFooterView(props: RunFooterViewProps) {
   const [route, setRoute] = createSignal<FooterPromptRoute>({ type: "composer" })
   const [subagentMenuRows, setSubagentMenuRows] = createSignal(RUN_SUBAGENT_PANEL_ROWS)
   const queuedPrompts = createMemo(() => props.queuedPrompts?.() ?? [])
+  const threads = createMemo<FooterThreadCatalog>(() => props.threads?.() ?? { threads: [] })
   const skills = createMemo(() => (props.commands() ?? []).filter((item) => item.source === "skill"))
   const prompt = createMemo(() => active().type === "prompt" && route().type === "composer")
   const selectingSubagent = createMemo(() => active().type === "prompt" && route().type === "subagent-menu")
   const selectingQueued = createMemo(() => active().type === "prompt" && route().type === "queued-menu")
+  const selectingThread = createMemo(() => active().type === "prompt" && route().type === "thread-menu")
   const inspecting = createMemo(() => active().type === "prompt" && route().type === "subagent")
   const commanding = createMemo(() => active().type === "prompt" && route().type === "command")
   const skilling = createMemo(() => active().type === "prompt" && route().type === "skill")
@@ -150,6 +161,7 @@ export function RunFooterView(props: RunFooterViewProps) {
       active().type === "permission" ||
       active().type === "question" ||
       selectingQueued() ||
+      selectingThread() ||
       selectingSubagent() ||
       commanding() ||
       skilling() ||
@@ -329,8 +341,56 @@ export function RunFooterView(props: RunFooterViewProps) {
     props.onSubagentSelect?.(undefined)
   }
 
+  const openThreadMenu = () => {
+    if (props.brand !== "w1") return
+    setRoute({ type: "thread-menu" })
+    props.onSubagentSelect?.(undefined)
+    if (!props.onThreadCatalogRequest) return
+    void Promise.resolve()
+      .then(() => props.onThreadCatalogRequest!())
+      .catch(() => props.onStatus("could not refresh sessions"))
+  }
+
   const closePanel = () => {
     setRoute({ type: "composer" })
+  }
+
+  const resumeThread = (threadID: string) => {
+    if (!props.onThreadSelect) {
+      props.onStatus("session controls unavailable")
+      return Promise.resolve(false)
+    }
+
+    return Promise.resolve()
+      .then(() => props.onThreadSelect!(threadID))
+      .then((accepted) => {
+        if (accepted === false) return false
+        closePanel()
+        return true
+      })
+      .catch(() => {
+        props.onStatus("could not resume session")
+        return false
+      })
+  }
+
+  const newThread = () => {
+    if (!props.onThreadNew) {
+      props.onStatus("session controls unavailable")
+      return Promise.resolve(false)
+    }
+
+    return Promise.resolve()
+      .then(() => props.onThreadNew!())
+      .then((accepted) => {
+        if (accepted === false) return false
+        closePanel()
+        return true
+      })
+      .catch(() => {
+        props.onStatus("could not create session")
+        return false
+      })
   }
 
   const openTab = (sessionID: string) => {
@@ -380,6 +440,10 @@ export function RunFooterView(props: RunFooterViewProps) {
     onExitRequest: props.onExitRequest,
     onExit: props.onExit,
     onSkillMenu: openSkillMenu,
+    localThreads: props.brand === "w1",
+    onThreadMenu: openThreadMenu,
+    onThreadSelect: resumeThread,
+    onThreadNew: newThread,
     onRows: props.onRows,
     onStatus: props.onStatus,
     onPasteAttachment: props.onPasteAttachment,
@@ -609,6 +673,7 @@ export function RunFooterView(props: RunFooterViewProps) {
       current.type !== "model" &&
       current.type !== "variant" &&
       current.type !== "queued-menu" &&
+      current.type !== "thread-menu" &&
       current.type !== "subagent-menu"
     ) {
       return
@@ -732,6 +797,19 @@ export function RunFooterView(props: RunFooterViewProps) {
                             onRows={setSubagentMenuRows}
                           />
                         </Match>
+                        <Match when={selectingThread()}>
+                          <RunThreadSelectBody
+                            theme={theme}
+                            catalog={threads}
+                            onClose={closePanel}
+                            onSelect={async (threadID) => {
+                              await resumeThread(threadID)
+                            }}
+                            onNew={async () => {
+                              await newThread()
+                            }}
+                          />
+                        </Match>
                         <Match when={commanding()}>
                           <RunCommandMenuBody
                             theme={theme}
@@ -749,6 +827,8 @@ export function RunFooterView(props: RunFooterViewProps) {
                             onSkill={openSkillMenu}
                             onSubagent={openSubagentMenu}
                             onQueued={openQueuedMenu}
+                            onResume={openThreadMenu}
+                            showResume={props.brand === "w1"}
                             onVariant={openVariant}
                             onVariantCycle={() => {
                               props.onCycle()
@@ -759,6 +839,11 @@ export function RunFooterView(props: RunFooterViewProps) {
                               closePanel()
                             }}
                             onNew={() => {
+                              if (props.brand === "w1") {
+                                void newThread()
+                                return
+                              }
+
                               composer.submitText("/new")
                               closePanel()
                             }}

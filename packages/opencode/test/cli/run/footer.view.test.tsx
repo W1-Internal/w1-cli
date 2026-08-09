@@ -17,12 +17,14 @@ import {
   RunVariantSelectBody,
 } from "@/cli/cmd/run/footer.command"
 import { RunFooterView } from "@/cli/cmd/run/footer.view"
+import { RUN_THREAD_PANEL_ROWS, RunThreadSelectBody } from "@/cli/cmd/run/footer.thread"
 import { RunEntryContent } from "@/cli/cmd/run/scrollback.writer"
 import { RUN_THEME_FALLBACK, type RunTheme } from "@/cli/cmd/run/theme"
 import type {
   FooterState,
   FooterSubagentState,
   FooterSubagentTab,
+  FooterThreadCatalog,
   FooterView,
   RunCommand,
   RunInput,
@@ -167,6 +169,11 @@ async function renderFooter(
     state?: Partial<FooterState>
     onCycle?: () => void
     onSubmit?: (prompt: RunPrompt) => boolean
+    brand?: "w1"
+    threads?: FooterThreadCatalog
+    onThreadCatalogRequest?: () => void
+    onThreadSelect?: (threadID: string) => boolean | void
+    onThreadNew?: () => boolean | void
   } = {},
 ) {
   const [view] = createSignal<FooterView>({ type: "prompt" })
@@ -197,6 +204,7 @@ async function renderFooter(
           state={state}
           view={view}
           subagent={subagents}
+          threads={() => input.threads ?? { threads: [] }}
           theme={input.theme ?? (() => RUN_THEME_FALLBACK)}
           tuiConfig={config}
           backgroundSubagents={input.backgroundSubagents ?? true}
@@ -216,6 +224,10 @@ async function renderFooter(
           onLayout={() => {}}
           onStatus={() => {}}
           onQueuedRemove={async () => true}
+          onThreadCatalogRequest={input.onThreadCatalogRequest}
+          onThreadSelect={input.onThreadSelect}
+          onThreadNew={input.onThreadNew}
+          brand={input.brand}
         />
       </OpencodeKeymapProvider>
     )
@@ -420,6 +432,150 @@ test("direct command panel renders grouped command palette", async () => {
     expect(frame).not.toContain("Commands 8")
   } finally {
     app.renderer.destroy()
+  }
+})
+
+test("W1 command palette exposes the local resume action", async () => {
+  const [commands] = createSignal<RunCommand[] | undefined>([])
+  let resumed = 0
+  const app = await testRender(
+    () => (
+      <box width={100} height={RUN_COMMAND_PANEL_ROWS}>
+        <RunCommandMenuBody
+          theme={() => RUN_THEME_FALLBACK.footer}
+          commands={commands}
+          subagents={() => []}
+          queued={() => []}
+          variants={() => []}
+          variantCycle=""
+          onClose={() => {}}
+          onModel={() => {}}
+          onEditor={() => {}}
+          onSkill={() => {}}
+          onSubagent={() => {}}
+          onQueued={() => {}}
+          onResume={() => {
+            resumed++
+          }}
+          showResume
+          onVariant={() => {}}
+          onVariantCycle={() => {}}
+          onCommand={() => {}}
+          onNew={() => {}}
+          onExit={() => {}}
+        />
+      </box>
+    ),
+    { width: 100, height: RUN_COMMAND_PANEL_ROWS, kittyKeyboard: true },
+  )
+
+  try {
+    await app.renderOnce()
+    expect(app.captureCharFrame()).toContain("Resume session")
+    expect(app.captureCharFrame()).toContain("/resume")
+
+    "resume".split("").forEach((key) => app.mockInput.pressKey(key))
+    app.mockInput.pressEnter()
+    expect(resumed).toBe(1)
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("W1 thread panel groups sessions and keeps New session sticky", async () => {
+  const [catalog] = createSignal<FooterThreadCatalog>({
+    currentThreadID: "thread-running",
+    threads: [
+      { threadID: "thread-recent", title: "Recent work", status: "idle", updatedAt: 10 },
+      { threadID: "thread-input", title: "Needs answer", status: "awaiting_user", updatedAt: 20 },
+      { threadID: "thread-running", title: "Active work", status: "running", updatedAt: 30 },
+    ],
+  })
+  let created = 0
+  const app = await testRender(
+    () => (
+      <box width={100} height={RUN_THREAD_PANEL_ROWS}>
+        <RunThreadSelectBody
+          theme={() => RUN_THEME_FALLBACK.footer}
+          catalog={catalog}
+          onClose={() => {}}
+          onSelect={() => {}}
+          onNew={() => {
+            created++
+          }}
+        />
+      </box>
+    ),
+    { width: 100, height: RUN_THREAD_PANEL_ROWS, kittyKeyboard: true },
+  )
+
+  try {
+    await app.renderOnce()
+    const frame = app.captureCharFrame()
+    expect(frame).toContain("Running")
+    expect(frame).toContain("Needs input")
+    expect(frame).toContain("Recent")
+    expect(frame).toContain("Active work")
+    expect(frame).toContain("needs input")
+    expect(frame).toContain("+ New session")
+
+    app.mockInput.pressKey("END")
+    app.mockInput.pressEnter()
+    expect(created).toBe(1)
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("W1 handles resume and new locally without submitting them to the model", async () => {
+  const resumed: string[] = []
+  const submits: RunPrompt[] = []
+  let refreshed = 0
+  let created = 0
+  const app = await renderFooter({
+    brand: "w1",
+    height: 20,
+    threads: {
+      threads: [{ threadID: "thread-1", title: "First task", status: "idle", updatedAt: 1 }],
+    },
+    onSubmit(prompt) {
+      submits.push(prompt)
+      return true
+    },
+    onThreadCatalogRequest() {
+      refreshed++
+    },
+    onThreadSelect(threadID) {
+      resumed.push(threadID)
+      return true
+    },
+    onThreadNew() {
+      created++
+      return true
+    },
+  })
+
+  try {
+    await app.renderOnce()
+    "/resume thread-1".split("").forEach((key) => app.mockInput.pressKey(key))
+    app.mockInput.pressEnter()
+    await app.renderOnce()
+    expect(resumed).toEqual(["thread-1"])
+
+    "/new".split("").forEach((key) => app.mockInput.pressKey(key))
+    app.mockInput.pressEnter()
+    await app.renderOnce()
+    expect(created).toBe(1)
+
+    "/resume".split("").forEach((key) => app.mockInput.pressKey(key))
+    app.mockInput.pressEnter()
+    await app.renderOnce()
+    expect(refreshed).toBe(1)
+    expect(app.captureCharFrame()).toContain("Resume session")
+    expect(app.captureCharFrame()).toContain("+ New session")
+    expect(submits).toEqual([])
+  } finally {
+    app.cleanup()
   }
 })
 
