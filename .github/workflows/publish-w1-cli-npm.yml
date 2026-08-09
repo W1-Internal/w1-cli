@@ -81,13 +81,8 @@ jobs:
         run: |
           mkdir -p .w1-harness/scripts/npm
           cp packages/opencode/script/runtime/w1-engine-entry.ts.txt .w1-harness/scripts/npm/w1-engine-entry.ts
-          cp .w1-harness/scripts/run-stream.ts .w1-harness/scripts/run-stream-npm.ts
-          cat packages/opencode/script/runtime/run-stream-exports.ts.txt >> .w1-harness/scripts/run-stream-npm.ts
-          .w1-harness/vscode-extension/node_modules/.bin/esbuild \
-            .w1-harness/scripts/run-stream-npm.ts \
-            --bundle --platform=node --format=esm --target=node18 \
-            --external:@napi-rs/canvas \
-            --outfile=.w1-harness/vscode-extension/out/harness/run-stream.mjs
+          grep -q 'export async function serve' .w1-harness/scripts/run-stream.ts
+          grep -q 'export function installRuntimeSignalHandlers' .w1-harness/scripts/run-stream.ts
           .w1-harness/vscode-extension/node_modules/.bin/esbuild \
             .w1-harness/scripts/npm/w1-engine-entry.ts \
             --bundle --platform=node --format=esm --target=node18 \

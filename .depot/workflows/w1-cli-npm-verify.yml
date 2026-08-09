@@ -12,7 +12,7 @@ jobs:
     timeout-minutes: 45
     env:
       W1_CLI_VERSION: 0.1.4-next.0
-      W1_HARNESS_REF: 91808b2e98f8ba16287c5baf9266c11bf487740f
+      W1_HARNESS_REF: 1ba5e6f89360c9364c37318ff401fd7d88ecd288
     steps:
       - name: Checkout CLI branch
         uses: actions/checkout@v6
@@ -37,13 +37,8 @@ jobs:
           npm --prefix .w1-harness/vscode-extension run vscode:prepublish
           mkdir -p .w1-harness/scripts/npm
           cp packages/opencode/script/runtime/w1-engine-entry.ts.txt .w1-harness/scripts/npm/w1-engine-entry.ts
-          cp .w1-harness/scripts/run-stream.ts .w1-harness/scripts/run-stream-npm.ts
-          cat packages/opencode/script/runtime/run-stream-exports.ts.txt >> .w1-harness/scripts/run-stream-npm.ts
-          .w1-harness/vscode-extension/node_modules/.bin/esbuild \
-            .w1-harness/scripts/run-stream-npm.ts \
-            --bundle --platform=node --format=esm --target=node18 \
-            --external:@napi-rs/canvas \
-            --outfile=.w1-harness/vscode-extension/out/harness/run-stream.mjs
+          grep -q 'export async function serve' .w1-harness/scripts/run-stream.ts
+          grep -q 'export function installRuntimeSignalHandlers' .w1-harness/scripts/run-stream.ts
           .w1-harness/vscode-extension/node_modules/.bin/esbuild \
             .w1-harness/scripts/npm/w1-engine-entry.ts \
             --bundle --platform=node --format=esm --target=node18 \
