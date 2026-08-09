@@ -110,7 +110,7 @@ jobs:
           test -s "$bin_dir/w1-runtime/w1-engine.mjs"
           test -s "$bin_dir/w1-runtime/run-stream.mjs"
           test -s "$bin_dir/w1-runtime/BUILD_ID"
-          file "$bin_dir/w1" | grep -q 'Mach-O 64-bit executable arm64'
+          file "$bin_dir/w1" | grep -Eq 'Mach-O.*arm64|Mach-O.*ARM64'
 
       - name: Observe full OpenCode package suite (main baseline is red)
         continue-on-error: true
