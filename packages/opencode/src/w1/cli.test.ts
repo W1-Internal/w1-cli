@@ -112,6 +112,11 @@ test.skipIf(process.platform === "win32")("interactive W1 uses the product TUI a
   const received = path.join(root, "received-turn.json")
   const image = path.join(root, "reference.png")
   const engine = path.join(import.meta.dir, "fixture-engine.mjs")
+  const tasks = Array.from({ length: 12 }, (_, index) => ({
+    id: `t${index + 1}`,
+    title: `Audit task ${index + 1}`,
+    status: index < 4 ? "completed" : index === 4 ? "in_progress" : "pending",
+  }))
   await mkdir(path.join(root, ".w1"), { recursive: true })
   await Bun.write(path.join(root, ".w1", "auth.json"), JSON.stringify({ token: "w1s_fixture" }))
   await Bun.write(image, Buffer.from("89504e470d0a1a0a", "hex"))
@@ -124,7 +129,7 @@ test.skipIf(process.platform === "win32")("interactive W1 uses the product TUI a
       "const lines = createInterface({ input: process.stdin })",
       'lines.on("line", (line) => {',
       `  writeFileSync(${JSON.stringify(received)}, line)`,
-      '  process.stdout.write("@@EVT@@{\\"t\\":\\"task_state\\",\\"items\\":[{\\"id\\":\\"t1\\",\\"title\\":\\"Inspect runtime\\",\\"status\\":\\"in_progress\\"}]}\\n")',
+      `  process.stdout.write(${JSON.stringify(`@@EVT@@${JSON.stringify({ t: "task_state", items: tasks })}\n`)})`,
       '  process.stdout.write("@@EVT@@{\\"t\\":\\"action\\",\\"tool\\":\\"read\\",\\"toolCallId\\":\\"call-1\\",\\"input\\":{\\"path\\":\\"README.md\\"}}\\n")',
       '  process.stdout.write("@@EVT@@{\\"t\\":\\"observation\\",\\"toolCallId\\":\\"call-1\\",\\"ok\\":true,\\"observation\\":\\"line one\\\\nline two\\\\nline three\\"}\\n")',
       '  process.stdout.write("@@EVT@@{\\"t\\":\\"say_delta\\",\\"text\\":\\"| Check | Result |\\\\n|---|---|\\\\n| TUI | Ready |\\"}\\n")',
@@ -171,14 +176,15 @@ test.skipIf(process.platform === "win32")("interactive W1 uses the product TUI a
     child.write("audit this\r")
     for (
       let attempt = 0;
-      attempt < 250 && (!(await Bun.file(received).exists()) || !output.includes("Inspect runtime"));
+      attempt < 250 && (!(await Bun.file(received).exists()) || !output.includes("Audit task 12"));
       attempt++
     ) await Bun.sleep(20)
-    for (const expected of ["Inspect runtime", "Ready"]) {
+    for (const expected of ["W1", "Audit task 1", "Audit task 12", "   ● read", "      └─ ✓ line one", "Ready"]) {
       if (!output.includes(expected)) {
         throw new Error(`interactive W1 output missing ${JSON.stringify(expected)}; tail=${JSON.stringify(output.slice(-4_000))}`)
       }
     }
+    expect(output).not.toContain("OpenCode")
     expect(output).not.toContain("line three")
     const turn = JSON.parse(await Bun.file(received).text())
     expect(turn).toMatchObject({
