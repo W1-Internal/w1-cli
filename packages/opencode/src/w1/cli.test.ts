@@ -154,13 +154,19 @@ test.skipIf(process.platform === "win32")("interactive W1 uses the product TUI a
     await Bun.sleep(250)
     child.write("audit this\r")
     for (let attempt = 0; attempt < 150 && !output.includes("Ready"); attempt++) await Bun.sleep(20)
-    expect(output).toContain("Inspect runtime")
-    expect(output).toContain("Ready")
+    for (const expected of ["Inspect runtime", "Ready"]) {
+      if (!output.includes(expected)) {
+        throw new Error(`interactive W1 output missing ${JSON.stringify(expected)}; tail=${JSON.stringify(output.slice(-4_000))}`)
+      }
+    }
     expect(output).not.toContain("line three")
     const turn = JSON.parse(await Bun.file(received).text())
     expect(turn).toMatchObject({ provider: "w1", images: [expect.stringMatching(/^data:image\/png;base64,/)] })
-    expect(turn.task).toContain("audit this")
-    expect(turn.task).toContain(path.join(".w1", "attachments"))
+    for (const expected of ["audit this", path.join(".w1", "attachments")]) {
+      if (!turn.task.includes(expected)) {
+        throw new Error(`runtime turn task missing ${JSON.stringify(expected)}; task=${JSON.stringify(turn.task)}`)
+      }
+    }
     child.write("exit\r")
     const exitCode = await Promise.race([exited.promise, Bun.sleep(3_000).then(() => -1)])
     if (exitCode === -1) child.kill("SIGKILL")
