@@ -169,7 +169,11 @@ test.skipIf(process.platform === "win32")("interactive W1 uses the product TUI a
       throw new Error(`interactive W1 composer did not become ready; tail=${JSON.stringify(output.slice(-4_000))}`)
     }
     child.write("audit this\r")
-    for (let attempt = 0; attempt < 150 && !output.includes("Ready"); attempt++) await Bun.sleep(20)
+    for (
+      let attempt = 0;
+      attempt < 250 && (!(await Bun.file(received).exists()) || !output.includes("Inspect runtime"));
+      attempt++
+    ) await Bun.sleep(20)
     for (const expected of ["Inspect runtime", "Ready"]) {
       if (!output.includes(expected)) {
         throw new Error(`interactive W1 output missing ${JSON.stringify(expected)}; tail=${JSON.stringify(output.slice(-4_000))}`)
