@@ -541,7 +541,7 @@ test("direct command panel shows subagent entry when available", async () => {
     await app.renderOnce()
     const frame = app.captureCharFrame()
 
-    expect(frame).toContain("View subagents")
+    expect(frame).toContain("View tools / agents")
     expect(frame).toContain("1 active")
   } finally {
     app.renderer.destroy()
@@ -589,7 +589,7 @@ test("direct command panel keeps completed subagents available", async () => {
     await app.renderOnce()
     const frame = app.captureCharFrame()
 
-    expect(frame).toContain("View subagents")
+    expect(frame).toContain("View tools / agents")
     expect(frame).toContain("1 recent")
   } finally {
     app.renderer.destroy()
@@ -1043,10 +1043,10 @@ test("direct footer shows editable prompts and additional queued work while runn
     expect(frame).toContain("3 queued")
     expect(frame).toContain("ctrl+b background")
     expect(frame).toContain("ctrl+x q 3 queued")
-    expect(frame).toContain("ctrl+x down subagents")
+    expect(frame).toContain("ctrl+x down tools / agents")
     expect(frame).toContain("ctrl+p cmd")
     expect(frame).toContain("a-model-name-long-enough-to-force-responsive-truncation")
-    expect(frame).toContain("subagents · ctrl+p cmd")
+    expect(frame).toContain("tools / agents · ctrl+p cmd")
     expect(frame).not.toContain("1 agent")
     expect(statusline.backgroundColor.toInts()).toEqual(tinted)
     expect(mode.backgroundColor.toInts()).toEqual(accent)
@@ -1082,7 +1082,7 @@ test("direct footer separates a lone context hint from model and command hint", 
     const frame = app.captureCharFrame()
 
     expect(frame).toContain("GPT-5")
-    expect(frame).toContain("xhigh · ctrl+x down subagents · ctrl+p cmd")
+    expect(frame).toContain("xhigh · ctrl+x down tools / agents · ctrl+p cmd")
     expect(frame).not.toContain("ctrl+b background")
     expect(frame).not.toContain("queued")
   } finally {
@@ -1111,7 +1111,7 @@ test("direct footer hides the subagent hint when only completed subagents remain
 
     expect(frame).toContain("GPT-5")
     expect(frame).toContain("xhigh · ctrl+p cmd")
-    expect(frame).not.toContain("ctrl+x down subagents")
+    expect(frame).not.toContain("ctrl+x down tools / agents")
   } finally {
     app.cleanup()
   }
