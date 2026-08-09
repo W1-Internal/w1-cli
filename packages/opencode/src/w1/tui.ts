@@ -679,7 +679,6 @@ export async function runW1Tui(input: Input) {
     onThreadNew: newThread,
   })
   footer = lifecycle.footer
-  await replay(initialController)
   const removeDisconnectListener = engine.onDisconnect(() => {
     if (closing) return
     footer?.event({ type: "stream.patch", patch: { status: "Reconnecting to W1 Engine…" } })
@@ -755,6 +754,7 @@ export async function runW1Tui(input: Input) {
       footer?.append(system(cause instanceof Error ? cause.message : String(cause), "error"))
     }
   })())
+  await replay(initialController)
 
   elapsedTimer = setInterval(() => {
     const controller = active()
