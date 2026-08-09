@@ -1,18 +1,24 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { createServer } from "node:net"
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { EngineClient, engineClientVersion, resolveEngine, selectedMessagesAfterSnapshot, type EngineEvent, type ThreadPush, type ThreadSummary } from "./engine"
 
 const originalEngine = process.env.W1_ENGINE_PATH
 const originalRuntime = process.env.W1_RUNTIME_PATH
+const originalState = process.env.W1_ENGINE_STATE_DIR
+const originalFixtureExit = process.env.W1_FIXTURE_EXIT_ON_CLOSE
 
 afterEach(() => {
   if (originalEngine === undefined) delete process.env.W1_ENGINE_PATH
   else process.env.W1_ENGINE_PATH = originalEngine
   if (originalRuntime === undefined) delete process.env.W1_RUNTIME_PATH
   else process.env.W1_RUNTIME_PATH = originalRuntime
+  if (originalState === undefined) delete process.env.W1_ENGINE_STATE_DIR
+  else process.env.W1_ENGINE_STATE_DIR = originalState
+  if (originalFixtureExit === undefined) delete process.env.W1_FIXTURE_EXIT_ON_CLOSE
+  else process.env.W1_FIXTURE_EXIT_ON_CLOSE = originalFixtureExit
 })
 
 describe("W1 Engine CLI client", () => {
@@ -67,8 +73,10 @@ describe("W1 Engine CLI client", () => {
 
       expect(await resolveEngine()).toEqual({
         enginePath: engine,
+        clientPath: path.join(root, "w1-engine-client.mjs"),
         workerPath: worker,
         buildId: "engine-build",
+        packageVersion: "0.0.0",
         source: "environment",
       })
     } finally {
@@ -117,7 +125,7 @@ describe("W1 Engine CLI client", () => {
     const client = new EngineClient(socketPath)
     try {
       await client.connect({
-        location: { enginePath: "unused", workerPath: "unused", buildId: "build-1", source: "environment" },
+        location: { enginePath: "unused", clientPath: "unused", workerPath: "unused", buildId: "build-1", packageVersion: "1.0.0", source: "environment" },
         clientVersion: "1.0.0",
       })
       const received: number[] = []
@@ -175,7 +183,7 @@ describe("W1 Engine CLI client", () => {
     const client = new EngineClient(socketPath)
     try {
       await client.connect({
-        location: { enginePath: "unused", workerPath: "unused", buildId: "build-1", source: "environment" },
+        location: { enginePath: "unused", clientPath: "unused", workerPath: "unused", buildId: "build-1", packageVersion: "1.0.0", source: "environment" },
         clientVersion: "1.0.0",
       })
       const snapshots: string[][] = []
@@ -194,4 +202,148 @@ describe("W1 Engine CLI client", () => {
       await rm(root, { recursive: true, force: true })
     }
   })
+
+  test("refuses an automatic engine upgrade while the older daemon is active", async () => {
+    if (process.platform === "win32") return
+    const root = await mkdtemp(path.join(tmpdir(), "w1-engine-active-upgrade-"))
+    const socketPath = path.join(root, "engine.sock")
+    const server = createServer((socket) => respondAsEngine(socket, {
+      buildId: "old-build",
+      packageVersion: "1.0.0",
+      activeThreads: 2,
+    }))
+    await new Promise<void>((resolve) => server.listen(socketPath, resolve))
+    const client = new EngineClient(socketPath)
+    try {
+      await expect(client.connect({
+        location: { enginePath: "unused", clientPath: "unused", workerPath: "unused", buildId: "new-build", packageVersion: "2.0.0", source: "environment" },
+        clientVersion: "2.0.0",
+      })).rejects.toThrow("upgrade to 2.0.0 was refused until it is idle")
+    } finally {
+      client.close()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("accepts a newer compatible daemon instead of downgrading it", async () => {
+    if (process.platform === "win32") return
+    const root = await mkdtemp(path.join(tmpdir(), "w1-engine-newer-"))
+    const socketPath = path.join(root, "engine.sock")
+    const server = createServer((socket) => respondAsEngine(socket, {
+      buildId: "newer-build",
+      packageVersion: "3.0.0",
+      activeThreads: 0,
+    }))
+    await new Promise<void>((resolve) => server.listen(socketPath, resolve))
+    const client = new EngineClient(socketPath)
+    try {
+      await client.connect({
+        location: { enginePath: "unused", clientPath: "unused", workerPath: "unused", buildId: "older-build", packageVersion: "2.0.0", source: "environment" },
+        clientVersion: "2.0.0",
+      })
+      expect(client.connected).toBe(true)
+    } finally {
+      client.close()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("rejects a different build claiming the same package version", async () => {
+    if (process.platform === "win32") return
+    const root = await mkdtemp(path.join(tmpdir(), "w1-engine-integrity-"))
+    const socketPath = path.join(root, "engine.sock")
+    const server = createServer((socket) => respondAsEngine(socket, {
+      buildId: "unexpected-build",
+      packageVersion: "2.0.0",
+      activeThreads: 0,
+    }))
+    await new Promise<void>((resolve) => server.listen(socketPath, resolve))
+    const client = new EngineClient(socketPath)
+    try {
+      await expect(client.connect({
+        location: { enginePath: "unused", clientPath: "unused", workerPath: "unused", buildId: "expected-build", packageVersion: "2.0.0", source: "environment" },
+        clientVersion: "2.0.0",
+      })).rejects.toThrow("W1 Engine integrity mismatch")
+    } finally {
+      client.close()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("replaces an idle older daemon with the packaged engine", async () => {
+    if (process.platform === "win32") return
+    const root = await mkdtemp(path.join(tmpdir(), "w1-engine-idle-upgrade-"))
+    const endpoint = path.join(root, "ipc", "w1-v1.sock")
+    await mkdir(path.dirname(endpoint), { recursive: true })
+    const enginePath = path.join(root, "fixture-engine.mjs")
+    const workerPath = path.join(root, "run-stream.mjs")
+    await copyFile(path.join(import.meta.dir, "fixture-engine.mjs"), enginePath)
+    await writeFile(workerPath, "export {}\n")
+    await writeFile(path.join(root, "BUILD_ID"), "new-build\n")
+    process.env.W1_ENGINE_STATE_DIR = root
+    process.env.W1_FIXTURE_EXIT_ON_CLOSE = "1"
+    let stopped = false
+    const server = createServer((socket) => respondAsEngine(socket, {
+      buildId: "old-build",
+      packageVersion: "1.0.0",
+      activeThreads: 0,
+      onStop() {
+        stopped = true
+        setImmediate(() => server.close())
+      },
+    }))
+    await new Promise<void>((resolve) => server.listen(endpoint, resolve))
+    const client = new EngineClient(endpoint)
+    try {
+      await client.connect({
+        location: { enginePath, clientPath: "unused", workerPath, buildId: "new-build", packageVersion: "2.0.0", source: "environment" },
+        clientVersion: "2.0.0",
+        timeoutMs: 5_000,
+      })
+      expect(stopped).toBe(true)
+      expect(client.connected).toBe(true)
+    } finally {
+      client.close()
+      await Bun.sleep(50)
+      await rm(root, { recursive: true, force: true })
+    }
+  })
 })
+
+function respondAsEngine(socket: import("node:net").Socket, input: {
+  buildId: string
+  packageVersion: string
+  activeThreads: number
+  onStop?: () => void
+}) {
+  socket.setEncoding("utf8")
+  let buffer = ""
+  socket.on("data", (chunk) => {
+    buffer += chunk
+    for (;;) {
+      const boundary = buffer.indexOf("\n")
+      if (boundary < 0) break
+      const request = JSON.parse(buffer.slice(0, boundary)) as { id: string; method: string }
+      buffer = buffer.slice(boundary + 1)
+      const result = request.method === "protocol.handshake"
+        ? { protocolVersion: 1, buildId: input.buildId, minimumClientVersion: "0.0.0" }
+        : request.method === "engine.status"
+          ? {
+              pid: process.pid,
+              protocolVersion: 1,
+              buildId: input.buildId,
+              packageVersion: input.packageVersion,
+              activeThreads: input.activeThreads,
+              idle: input.activeThreads === 0,
+              stopWhenIdle: false,
+            }
+          : { accepted: true, stopping: true, whenIdle: false, activeThreads: input.activeThreads }
+      socket.write(JSON.stringify({ id: request.id, ok: true, result }) + "\n", () => {
+        if (request.method === "engine.stop") input.onStop?.()
+      })
+    }
+  })
+}

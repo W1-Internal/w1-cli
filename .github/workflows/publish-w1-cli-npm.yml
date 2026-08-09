@@ -16,6 +16,11 @@ on:
         required: true
         default: false
         type: boolean
+      publish:
+        description: Publish after Depot validation (leave false for dogfood build artifacts)
+        required: true
+        default: false
+        type: boolean
 
 concurrency:
   group: publish-w1-cli-npm-${{ inputs.version }}
@@ -65,6 +70,31 @@ jobs:
           npm ci --prefix vscode-extension
           npm --prefix vscode-extension run vscode:prepublish
           test -s vscode-extension/out/harness/run-stream.mjs
+          test -s vscode-extension/out/harness/w1-engine.mjs
+          test -s vscode-extension/out/harness/BUILD_ID
+
+      - name: Build npm engine and client entrypoints
+        run: |
+          mkdir -p .w1-harness/scripts/npm
+          cp packages/opencode/script/runtime/w1-engine-entry.ts.txt .w1-harness/scripts/npm/w1-engine-entry.ts
+          cp .w1-harness/scripts/run-stream.ts .w1-harness/scripts/run-stream-npm.ts
+          cat packages/opencode/script/runtime/run-stream-exports.ts.txt >> .w1-harness/scripts/run-stream-npm.ts
+          .w1-harness/vscode-extension/node_modules/.bin/esbuild \
+            .w1-harness/scripts/run-stream-npm.ts \
+            --bundle --platform=node --format=esm --target=node18 \
+            --external:@napi-rs/canvas \
+            --outfile=.w1-harness/vscode-extension/out/harness/run-stream.mjs
+          .w1-harness/vscode-extension/node_modules/.bin/esbuild \
+            .w1-harness/scripts/npm/w1-engine-entry.ts \
+            --bundle --platform=node --format=esm --target=node18 \
+            --external:@napi-rs/canvas \
+            --outfile=.w1-harness/vscode-extension/out/harness/w1-engine.mjs
+          .w1-harness/vscode-extension/node_modules/.bin/esbuild \
+            packages/opencode/src/w1/engine.ts \
+            --bundle --platform=node --format=esm --target=node18 \
+            --outfile=.w1-harness/vscode-extension/out/harness/w1-engine-client.mjs
+          test -s .w1-harness/vscode-extension/out/harness/w1-engine.mjs
+          test -s .w1-harness/vscode-extension/out/harness/w1-engine-client.mjs
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -79,7 +109,7 @@ jobs:
 
       - name: Run W1 package contracts
         working-directory: packages/opencode
-        run: bun test src/w1/auth.test.ts src/w1/runtime.test.ts src/w1/cli.test.ts src/w1/npm-package.test.ts
+        run: bun test src/w1/auth.test.ts src/w1/runtime.test.ts src/w1/cli.test.ts src/w1/engine.test.ts src/w1/npm-package.test.ts
 
       - name: Build macOS native packages
         working-directory: packages/opencode
@@ -95,6 +125,8 @@ jobs:
         working-directory: packages/opencode
         env:
           W1_NPM_ALLOW_PUBLIC_RUNTIME: "1"
+          W1_CLI_REF: ${{ github.sha }}
+          W1_HARNESS_REF: ${{ inputs.harness_ref }}
         run: bun run script/package-w1-npm.ts
 
       - name: Verify staged package contracts
@@ -105,6 +137,11 @@ jobs:
           test -x dist/npm/w1-cli-darwin-x64/bin/w1
           test -x dist/npm/w1-cli-darwin-x64-baseline/bin/w1
           test -s dist/npm/w1-cli-darwin-arm64/bin/w1-runtime/run-stream.mjs
+          test -s dist/npm/w1-cli-darwin-arm64/bin/w1-runtime/w1-engine.mjs
+          test -s dist/npm/w1-cli-darwin-arm64/bin/w1-runtime/w1-engine-client.mjs
+          test -s dist/npm/w1-cli-darwin-arm64/w1-runtime-manifest.json
+          test -d dist/npm/w1-cli-darwin-arm64/assets/skills
+          test -d dist/npm/w1-cli-darwin-arm64/assets/plugins
           dist/npm/w1-cli-darwin-arm64/bin/w1 --version
           for package in dist/npm/w1-cli-* dist/npm/w1-cli; do npm pack "$package" --dry-run --json >/dev/null; done
 
@@ -118,6 +155,7 @@ jobs:
 
   publish:
     name: Publish immutable packages with npm OIDC
+    if: ${{ inputs.publish }}
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 15

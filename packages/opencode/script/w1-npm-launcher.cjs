@@ -145,15 +145,19 @@ function resolveNativePackage() {
   const declared = meta.optionalDependencies || {}
   for (const name of candidates) {
     if (declared[name] !== meta.version) continue
+    let manifestPath
     try {
-      const manifestPath = requireFromHere.resolve(`${name}/package.json`)
-      const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"))
-      if (manifest.name !== name || manifest.version !== meta.version) continue
-      const root = path.dirname(manifestPath)
-      return validateNativePackage(root, name, platform, arch)
+      manifestPath = requireFromHere.resolve(`${name}/package.json`)
     } catch {
       // Try the next explicitly declared compatible package.
+      continue
     }
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"))
+    if (manifest.name !== name || manifest.version !== meta.version) {
+      throw new Error(`native package identity is invalid: ${name}`)
+    }
+    const root = path.dirname(manifestPath)
+    return validateNativePackage(root, name, platform, arch)
   }
   throw new Error(
     `The W1 native package for ${platform}/${arch} is missing or incomplete. ` +

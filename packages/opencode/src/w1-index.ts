@@ -16,17 +16,13 @@ const args = hideBin(process.argv)
 if (args[0] === "__runtime") {
   const runtimePath = args[1]
   if (!runtimePath) throw new Error("W1 runtime path is missing.")
-  process.argv = [process.execPath, runtimePath, "--serve"]
   const runtime = (await import(pathToFileURL(runtimePath).href)) as {
     serve?: () => Promise<void>
     installRuntimeSignalHandlers?: () => () => void
   }
-  if (runtime.serve) {
-    const removeSignalHandlers = runtime.installRuntimeSignalHandlers?.()
-    await runtime.serve().finally(() => removeSignalHandlers?.())
-  } else {
-    await new Promise<void>((resolve) => process.stdin.once("close", resolve))
-  }
+  if (!runtime.serve) throw new Error("Bundled W1 runtime does not export serve().")
+  const removeSignalHandlers = runtime.installRuntimeSignalHandlers?.()
+  await runtime.serve().finally(() => removeSignalHandlers?.())
   process.exit(0)
 }
 

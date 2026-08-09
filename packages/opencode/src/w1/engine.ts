@@ -6,6 +6,11 @@ import path from "node:path"
 import { createConnection, type Socket } from "node:net"
 import { validateW1RuntimePackage } from "./runtime-manifest"
 
+declare global {
+  const W1_CLI_COMPILED: boolean
+  const OPENCODE_VERSION: string
+}
+
 export const W1_ENGINE_PROTOCOL_VERSION = 1
 
 export function engineClientVersion(value: string) {

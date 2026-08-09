@@ -20,6 +20,8 @@ w1 login                    sign in or create an account in the external browser
 w1 auth status              show the shared W1 session status
 w1 logout                   revoke and remove the shared W1 session
 w1 doctor [project]         inspect filesystem, Git, session, runtime, backend and TTY health
+w1 engine status            inspect the one per-user W1 Engine without starting it
+w1 engine stop --when-idle  stop the Engine safely after active tasks finish
 ```
 
 ## npm distribution status
@@ -29,6 +31,21 @@ The npm release path is intentionally gated while it is being prepared. The publ
 plus exact-version, OS/architecture-specific native packages; the native package keeps `w1` and its
 adjacent `w1-runtime` together. It does not download executable code during installation and does not
 depend on lifecycle scripts.
+
+Each native package contains adjacent Engine, Engine-client and actor-worker bundles plus skills,
+plugins, PDF fonts and native canvas dependencies. `w1-runtime-manifest.json` pins the CLI and harness
+commits, package/protocol versions, entrypoints, sizes and SHA-256 hashes. Both the npm launcher and
+the compiled CLI fail closed when the manifest is missing, incomplete or tampered.
+
+The shared Engine converges by protocol and release version: an older idle daemon is replaced by the
+new package, an active daemon refuses automatic replacement, and an older CLI can keep using a newer
+compatible daemon. A different build claiming the same package version is treated as an integrity
+failure. This keeps Desktop, VS Code and terminal clients on one daemon rather than creating parallel
+per-surface runtimes.
+
+Before replacing an installed npm release, use `w1 engine stop --when-idle` and wait for
+`w1 engine status` to report that it is not running. npm replaces the native package directory in
+place, so updating files underneath an active daemon is intentionally unsupported.
 
 The bundled runtime is currently a readable JavaScript artifact. Public npm staging therefore fails
 unless the release operator explicitly sets `W1_NPM_ALLOW_PUBLIC_RUNTIME=1`; the release workflow
@@ -56,7 +73,8 @@ and user questions. Reasoning text remains hidden unless `--verbose` is explicit
 
 - OpenCode supplies the MIT-licensed terminal chassis and cross-platform build foundation.
 - W1's bundled `run-stream.mjs` remains the only actor/tool/runtime implementation.
-- The CLI launches the versioned W1 NDJSON/`@@TAG@@` stdio protocol through its own Bun runtime.
+- The CLI connects to the one per-user W1 Engine; the Engine launches the version-pinned worker with
+  an explicit executable and argv contract through the compiled CLI's internal `__runtime` dispatch.
 - The actor runtime needs no localhost HTTP server; sign-in uses only a short-lived loopback callback.
 - Tokens are never copied into argv, logs, traces or ordinary CLI configuration. They live only in
   the permission-protected shared W1 session store.
