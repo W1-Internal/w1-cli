@@ -5,6 +5,7 @@ import { mkdir, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import type { RunPromptAttachment } from "@/cli/cmd/run/types"
+import { assertAttachmentBytes } from "./tui-contract"
 
 const supported = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"])
 
@@ -32,6 +33,7 @@ export function createW1Attachments(input: { directory: string; threadID: string
   const folder = path.join(input.directory, ".w1", "attachments", input.threadID.replace(/[^a-zA-Z0-9._-]/g, "_"))
 
   async function persist(bytes: Uint8Array, mime: string, filename?: string): Promise<RunPromptAttachment> {
+    assertAttachmentBytes(bytes.byteLength)
     const target = path.join(folder, `${Date.now()}-${randomUUID()}${extension(mime)}`)
     await mkdir(folder, { recursive: true, mode: 0o700 })
     await writeFile(target, bytes, { mode: 0o600, flag: "wx" })
