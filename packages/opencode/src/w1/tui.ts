@@ -201,15 +201,17 @@ export async function runW1Tui(input: Input) {
   const location = await resolveEngine()
   if (!location) throw new Error("W1 Engine is missing. Reinstall W1 CLI or set W1_ENGINE_PATH to w1-engine.mjs.")
   const engine = new EngineClient()
-  const connectEngine = async () => {
-    await engine.connect({ location, clientVersion: engineClientVersion(InstallationVersion) })
+  const clientVersion = engineClientVersion(InstallationVersion)
+  const connection = { location, clientVersion }
+  const syncEngineAuth = async () => {
     const auth = await engine.request("auth.snapshot", {}) as { state?: string }
     if (auth.state === "signed_in") return
     const session = await W1Auth.readSession()
     if (!session) throw new Error("The W1 Engine is signed out. Run `w1 login` and try again.")
     await engine.request("auth.import_existing_session", { token: session.token, ...(session.email ? { email: session.email } : {}) })
   }
-  await connectEngine()
+  await engine.connect(connection)
+  await syncEngineAuth()
 
   let activeThreadID = input.threadID
   let summaries: ThreadSummary[] = []
@@ -246,6 +248,7 @@ export async function runW1Tui(input: Input) {
           title: item.title,
           status: item.state,
           updatedAt: Date.parse(item.updatedAt),
+          archived: item.archived === true,
         })),
       },
     })
@@ -268,11 +271,20 @@ export async function runW1Tui(input: Input) {
       { workspacePath: input.directory },
       (message) => updateSummary(message.thread),
       (snapshot) => {
-        summaries = [...snapshot.threads]
+        const archived = summaries.filter((item) => item.archived && !snapshot.threads.some((next) => next.threadId === item.threadId))
+        summaries = [...snapshot.threads, ...archived]
           .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))
         publishThreads()
       },
     )
+    const all = await engine.request("engine.threads.list", {
+      workspacePath: input.directory,
+      includeArchived: true,
+    }) as ThreadSummary[]
+    const archived = all.filter((item) => item.archived)
+    summaries = [...summaries.filter((item) => !item.archived && !archived.some((next) => next.threadId === item.threadId)), ...archived]
+      .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))
+    publishThreads()
   }
   await subscribeCatalog()
 
@@ -580,6 +592,23 @@ export async function runW1Tui(input: Input) {
     return true
   }
 
+  const archiveThread = async (id: string, archived: boolean) => {
+    const summary = summaries.find((item) => item.threadId === id)
+    if (!summary) return false
+    if (summary.state === "running" || summary.state === "awaiting_user") {
+      footer?.append(system("A working task cannot be archived. Stop it or wait for it to finish first.", "error"))
+      return false
+    }
+    await engine.request("engine.thread.archive", {
+      clientRequestId: randomUUID(),
+      workspacePath: input.directory,
+      threadId: id,
+      archived,
+    })
+    updateSummary({ ...summary, archived, updatedAt: new Date().toISOString() })
+    return true
+  }
+
   const recoverEngine = async () => {
     if (closing) throw new Error("W1 is closing.")
     if (engine.connected) return
@@ -590,7 +619,8 @@ export async function runW1Tui(input: Input) {
         if (delay) await Bun.sleep(delay)
         if (closing) throw new Error("W1 is closing.")
         try {
-          await connectEngine()
+          await engine.reconnect({ ...connection, attempts: 1 })
+          await syncEngineAuth()
           await subscribeCatalog()
           for (const controller of controllers.values()) {
             controller.subscription = undefined
@@ -677,6 +707,7 @@ export async function runW1Tui(input: Input) {
     onThreadCatalogRequest: publishThreads,
     onThreadSelect: switchThread,
     onThreadNew: newThread,
+    onThreadArchive: archiveThread,
   })
   footer = lifecycle.footer
   const removeDisconnectListener = engine.onDisconnect(() => {

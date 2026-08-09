@@ -35,10 +35,18 @@ function category(status: FooterThreadSummary["status"]) {
   return "Recent"
 }
 
+function threadCategory(thread: FooterThreadSummary) {
+  return thread.archived ? "Archived" : category(thread.status)
+}
+
 function rank(status: FooterThreadSummary["status"]) {
   if (status === "running") return 0
   if (status === "awaiting_user") return 1
   return 2
+}
+
+function threadRank(thread: FooterThreadSummary) {
+  return thread.archived ? 3 : rank(thread.status)
 }
 
 function status(status: FooterThreadSummary["status"]) {
@@ -58,6 +66,7 @@ export function RunThreadSelectBody(props: {
   onClose: () => void
   onSelect: (threadID: string) => void | Promise<void>
   onNew: () => void | Promise<void>
+  onArchive: (threadID: string, archived: boolean) => boolean | void | Promise<boolean | void>
 }) {
   let field: InputRenderable | undefined
   const [query, setQuery] = createSignal("")
@@ -65,15 +74,15 @@ export function RunThreadSelectBody(props: {
     props
       .catalog()
       .threads.map((thread) => ({
-        category: category(thread.status),
+        category: threadCategory(thread),
         display: thread.title.replace(/\s+/g, " ").trim() || thread.threadID,
         description: thread.threadID,
-        footer: `${status(thread.status)}${props.catalog().currentThreadID === thread.threadID ? " · current" : ""}`,
+        footer: `${thread.archived ? "archived" : status(thread.status)}${props.catalog().currentThreadID === thread.threadID ? " · current" : ""}`,
         thread,
       }))
       .sort(
         (a, b) =>
-          rank(a.thread.status) - rank(b.thread.status) ||
+          threadRank(a.thread) - threadRank(b.thread) ||
           updatedAt(b.thread.updatedAt) - updatedAt(a.thread.updatedAt) ||
           a.display.localeCompare(b.display),
       ),
@@ -163,6 +172,14 @@ export function RunThreadSelectBody(props: {
       return
     }
 
+    if (ctrl && name === "x") {
+      const thread = selectedThread()?.thread
+      if (!thread) return
+      event.preventDefault()
+      void props.onArchive(thread.threadID, !thread.archived)
+      return
+    }
+
     if (ctrl && name === "u") {
       event.preventDefault()
       setQuery("")
@@ -191,7 +208,7 @@ export function RunThreadSelectBody(props: {
         </text>
         <box flexGrow={1} flexShrink={1} backgroundColor="transparent" />
         <text fg={props.theme().muted} wrapMode="none" truncate flexShrink={0}>
-          esc
+          ctrl+x archive · esc
         </text>
       </box>
       <box height={1} flexShrink={0} backgroundColor={props.theme().shade} />

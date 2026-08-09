@@ -18,6 +18,20 @@ export function engineClientVersion(value: string) {
   return /^v?\d+\.\d+\.\d+(?:[-+].*)?$/.test(value.trim()) ? value.trim() : "0.0.0"
 }
 
+function compareVersions(leftValue: string, rightValue: string): -1 | 0 | 1 | undefined {
+  const parse = (value: string) => {
+    const match = /^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(value.trim())
+    return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : undefined
+  }
+  const left = parse(leftValue)
+  const right = parse(rightValue)
+  if (!left || !right) return
+  for (let index = 0; index < 3; index++) {
+    if (left[index] !== right[index]) return left[index]! > right[index]! ? 1 : -1
+  }
+  return 0
+}
+
 export type EngineEvent = {
   schemaVersion: 1
   eventId: string
@@ -52,6 +66,17 @@ export type ThreadSummary = {
   createdAt: string
   updatedAt: string
   lastSequence: number
+  archived: boolean
+}
+
+export type EngineStatus = {
+  protocolVersion: 1
+  engineVersion: string
+  buildId: string
+  minimumClientVersion: string
+  state: "idle" | "active"
+  activeTurnCount: number
+  activeTurns: Array<{ threadId: string; turnId: string; state: "running" | "terminalizing" }>
 }
 
 export type EngineLocation = {
@@ -176,6 +201,7 @@ export class EngineClient {
   }
 
   async connect(input: { location: EngineLocation; clientVersion: string; timeoutMs?: number }) {
+    if (this.connected) return
     try {
       await this.open(Math.min(input.timeoutMs ?? 2_000, 2_000))
     } catch (cause) {
@@ -186,6 +212,8 @@ export class EngineClient {
         ? [
             "__engine",
             input.location.enginePath,
+            "--engine-version",
+            input.clientVersion,
             "--worker-command",
             process.execPath,
             "--worker-arg",
@@ -195,6 +223,8 @@ export class EngineClient {
           ]
         : [
             input.location.enginePath,
+            "--engine-version",
+            input.clientVersion,
             "--worker-command",
             process.execPath,
             "--worker-arg",
@@ -221,15 +251,57 @@ export class EngineClient {
       clientVersion: input.clientVersion,
       platform: process.platform,
       channel: "release",
-    }) as { protocolVersion?: number; buildId?: string }
+    }) as { protocolVersion?: number; engineVersion?: string; buildId?: string; minimumClientVersion?: string }
     if (handshake.protocolVersion !== W1_ENGINE_PROTOCOL_VERSION) {
       this.close()
       throw new Error("The W1 CLI and Engine protocol versions are incompatible.")
     }
-    if (handshake.buildId !== input.location.buildId) {
+    const runningVersion = String(handshake.engineVersion ?? "0.0.0")
+    const comparison = compareVersions(runningVersion, input.clientVersion)
+    if (comparison === undefined) {
       this.close()
-      throw new Error(`The running W1 Engine belongs to another build (expected ${input.location.buildId}, got ${handshake.buildId ?? "unknown"}).`)
+      throw new Error("The running W1 Engine returned an invalid version handshake.")
     }
+    if (comparison === 0 && handshake.buildId !== input.location.buildId) {
+      this.close()
+      throw new Error(`The running W1 Engine has the same version but another build identity (expected ${input.location.buildId}, got ${handshake.buildId ?? "unknown"}).`)
+    }
+    if (comparison < 0) {
+      const replacement = await this.request("engine.shutdown", {
+        expectedEngineVersion: runningVersion,
+        expectedBuildId: String(handshake.buildId ?? ""),
+        replacementEngineVersion: input.clientVersion,
+        replacementBuildId: input.location.buildId,
+      }) as { accepted?: boolean; reason?: string; status?: EngineStatus }
+      if (!replacement.accepted) {
+        this.close()
+        const active = replacement.status?.activeTurnCount ?? 0
+        throw new Error(replacement.reason === "active_turns"
+          ? `The older W1 Engine is still running ${active} task${active === 1 ? "" : "s"}; it will upgrade when those tasks finish.`
+          : `The running W1 Engine refused replacement (${replacement.reason ?? "unknown reason"}).`)
+      }
+      this.close()
+      await Bun.sleep(75)
+      return this.connect(input)
+    }
+  }
+
+  async reconnect(input: { location: EngineLocation; clientVersion: string; attempts?: number; delayMs?: number }) {
+    const attempts = Math.max(1, Math.min(5, Math.floor(input.attempts ?? 4)))
+    const delayMs = Math.max(0, Math.min(10_000, Math.floor(input.delayMs ?? 250)))
+    this.close()
+    let failure: unknown
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      if (attempt) await Bun.sleep(delayMs)
+      try {
+        await this.connect(input)
+        return
+      } catch (cause) {
+        failure = cause
+        this.close()
+      }
+    }
+    throw failure instanceof Error ? failure : new Error(String(failure ?? "W1 Engine reconnect failed."))
   }
 
   private open(timeoutMs: number) {

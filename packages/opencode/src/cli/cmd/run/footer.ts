@@ -47,6 +47,7 @@ import type {
   FooterState,
   FooterSubagentState,
   FooterThreadCatalog,
+  FooterThreadArchive,
   FooterThreadCatalogRequest,
   FooterThreadNew,
   FooterThreadSelect,
@@ -106,6 +107,7 @@ type RunFooterOptions = {
   onThreadCatalogRequest?: FooterThreadCatalogRequest
   onThreadSelect?: FooterThreadSelect
   onThreadNew?: FooterThreadNew
+  onThreadArchive?: FooterThreadArchive
   onPasteAttachment?: (text: string) => Promise<RunPromptPaste | undefined>
   brand?: "w1"
   treeSitterClient?: TreeSitterClient
@@ -364,6 +366,7 @@ export class RunFooter implements FooterApi {
               onThreadCatalogRequest: options.onThreadCatalogRequest,
               onThreadSelect: options.onThreadSelect,
               onThreadNew: options.onThreadNew,
+              onThreadArchive: options.onThreadArchive,
               onQueuedRemove: footer.handleQueuedRemove,
               onPasteAttachment: options.onPasteAttachment,
               brand: options.brand,

@@ -22,6 +22,7 @@ import { resolveRunTheme } from "./theme"
 import type {
   FooterApi,
   FooterThreadCatalogRequest,
+  FooterThreadArchive,
   FooterThreadNew,
   FooterThreadSelect,
   PermissionReply,
@@ -82,6 +83,7 @@ export type LifecycleInput = {
   onThreadCatalogRequest?: FooterThreadCatalogRequest
   onThreadSelect?: FooterThreadSelect
   onThreadNew?: FooterThreadNew
+  onThreadArchive?: FooterThreadArchive
   onPasteAttachment?: (text: string) => Promise<RunPromptPaste | undefined>
   brand?: "w1"
 }
@@ -275,6 +277,7 @@ export async function createRuntimeLifecycle(input: LifecycleInput): Promise<Lif
       onThreadCatalogRequest: input.onThreadCatalogRequest,
       onThreadSelect: input.onThreadSelect,
       onThreadNew: input.onThreadNew,
+      onThreadArchive: input.onThreadArchive,
       onEditorOpen: async ({ value }) => {
         if (closed || renderer.isDestroyed) {
           return

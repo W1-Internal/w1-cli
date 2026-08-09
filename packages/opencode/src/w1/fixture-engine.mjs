@@ -29,7 +29,7 @@ function push(threadId, value, transient = false) {
 function summary(value) {
   if (!value) return value
   const { conversation: _conversation, ...thread } = value
-  return thread
+  return { archived: false, ...thread }
 }
 
 function pushCatalog(value) {
@@ -58,7 +58,8 @@ const server = createServer((socket) => {
       const request = JSON.parse(buffer.slice(0, boundary))
       buffer = buffer.slice(boundary + 1)
       const ok = (result) => socket.write(JSON.stringify({ id: request.id, ok: true, result }) + "\n")
-      if (request.method === "protocol.handshake") ok({ protocolVersion: 1, buildId, minimumClientVersion: "0.0.0" })
+      if (request.method === "protocol.handshake") ok({ protocolVersion: 1, engineVersion: "0.0.0", buildId, minimumClientVersion: "0.0.0" })
+      else if (request.method === "engine.status") ok({ protocolVersion: 1, engineVersion: "0.0.0", buildId, minimumClientVersion: "0.0.0", state: "idle", activeTurnCount: 0, activeTurns: [] })
       else if (request.method === "auth.snapshot") ok({ state: "signed_in" })
       else if (request.method === "engine.threads.list") ok([...threads.values()].map(summary))
       else if (request.method === "engine.conversation.get") ok(threads.get(request.params.threadId)?.conversation ?? [])
@@ -73,7 +74,7 @@ const server = createServer((socket) => {
           snapshot: {
             cursor: catalogCursor,
             threads: [...threads.values()]
-              .filter((thread) => path.resolve(thread.workspacePath) === path.resolve(request.params.workspacePath))
+              .filter((thread) => !thread.archived && path.resolve(thread.workspacePath) === path.resolve(request.params.workspacePath))
               .map(summary),
           },
         })
@@ -89,6 +90,14 @@ const server = createServer((socket) => {
           if (subscription.id === request.params.subscriptionId) subscriptions.delete(threadId)
         }
         ok({ unsubscribed: true })
+      } else if (request.method === "engine.thread.archive") {
+        const thread = threads.get(request.params.threadId)
+        if (thread) {
+          thread.archived = request.params.archived === true
+          thread.updatedAt = new Date().toISOString()
+          pushCatalog(thread)
+        }
+        ok({ archived: request.params.archived === true })
       } else if (request.method === "engine.attachment.put") {
         const sha256 = createHash("sha256").update(request.params.base64).digest("hex")
         ok({ attachmentId: `sha256:${sha256}`, sha256, bytes: Buffer.from(request.params.base64, "base64").length, mimeType: request.params.mimeType, durable: true })

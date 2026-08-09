@@ -205,6 +205,7 @@ export type FooterThreadSummary = {
   title: string
   status: FooterThreadStatus
   updatedAt: string | number
+  archived?: boolean
 }
 
 export type FooterThreadCatalog = {
@@ -218,6 +219,8 @@ export type FooterThreadCatalogRequest = () => void | Promise<void>
 export type FooterThreadSelect = (threadID: string) => boolean | void | Promise<boolean | void>
 
 export type FooterThreadNew = () => boolean | void | Promise<boolean | void>
+
+export type FooterThreadArchive = (threadID: string, archived: boolean) => boolean | void | Promise<boolean | void>
 
 export type FooterSubagentTab = {
   sessionID: string

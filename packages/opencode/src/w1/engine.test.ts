@@ -107,7 +107,7 @@ describe("W1 Engine CLI client", () => {
           const request = JSON.parse(buffer.slice(0, boundary)) as { id: string; method: string }
           buffer = buffer.slice(boundary + 1)
           if (request.method === "protocol.handshake") {
-            socket.write(JSON.stringify({ id: request.id, ok: true, result: { protocolVersion: 1, buildId: "build-1" } }) + "\n")
+            socket.write(JSON.stringify({ id: request.id, ok: true, result: { protocolVersion: 1, engineVersion: "1.0.0", buildId: "build-1" } }) + "\n")
           }
           if (request.method === "events.subscribe") {
             socket.write(JSON.stringify({ type: "transient", subscriptionId: "sub-1", threadId: "thread-1", event: { tag: "EVT", data: { t: "think_delta" } } }) + "\n")
@@ -154,6 +154,7 @@ describe("W1 Engine CLI client", () => {
       createdAt: updatedAt,
       updatedAt,
       lastSequence: 1,
+      archived: false,
     })
     const server = createServer((socket) => {
       socket.setEncoding("utf8")
@@ -166,7 +167,7 @@ describe("W1 Engine CLI client", () => {
           const request = JSON.parse(buffer.slice(0, boundary)) as { id: string; method: string }
           buffer = buffer.slice(boundary + 1)
           if (request.method === "protocol.handshake") {
-            socket.write(JSON.stringify({ id: request.id, ok: true, result: { protocolVersion: 1, buildId: "build-1" } }) + "\n")
+            socket.write(JSON.stringify({ id: request.id, ok: true, result: { protocolVersion: 1, engineVersion: "1.0.0", buildId: "build-1" } }) + "\n")
           }
           if (request.method === "catalog.subscribe") {
             socket.write(JSON.stringify({ type: "catalog", subscriptionId: "catalog-1", workspacePath: root, cursor: 1, thread: thread("snapshot-duplicate", "2026-08-09T00:00:01.000Z") }) + "\n")

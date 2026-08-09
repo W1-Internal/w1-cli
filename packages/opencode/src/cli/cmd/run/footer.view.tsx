@@ -42,6 +42,7 @@ import type {
   FooterState,
   FooterSubagentState,
   FooterThreadCatalog,
+  FooterThreadArchive,
   FooterThreadCatalogRequest,
   FooterThreadNew,
   FooterThreadSelect,
@@ -120,6 +121,7 @@ type RunFooterViewProps = {
   onThreadCatalogRequest?: FooterThreadCatalogRequest
   onThreadSelect?: FooterThreadSelect
   onThreadNew?: FooterThreadNew
+  onThreadArchive?: FooterThreadArchive
   onQueuedRemove: (messageID: string) => Promise<boolean>
   onPasteAttachment?: (text: string) => Promise<RunPromptPaste | undefined>
   brand?: "w1"
@@ -389,6 +391,20 @@ export function RunFooterView(props: RunFooterViewProps) {
       })
       .catch(() => {
         props.onStatus("could not create session")
+        return false
+      })
+  }
+
+  const archiveThread = (threadID: string, archived: boolean) => {
+    if (!props.onThreadArchive) {
+      props.onStatus("session archive controls unavailable")
+      return Promise.resolve(false)
+    }
+    return Promise.resolve()
+      .then(() => props.onThreadArchive!(threadID, archived))
+      .then((accepted) => accepted !== false)
+      .catch(() => {
+        props.onStatus(`could not ${archived ? "archive" : "restore"} session`)
         return false
       })
   }
@@ -808,6 +824,7 @@ export function RunFooterView(props: RunFooterViewProps) {
                             onNew={async () => {
                               await newThread()
                             }}
+                            onArchive={archiveThread}
                           />
                         </Match>
                         <Match when={commanding()}>
