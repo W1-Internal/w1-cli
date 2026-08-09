@@ -153,7 +153,12 @@ test.skipIf(process.platform === "win32")("interactive W1 uses the product TUI a
     child.onData((data) => (output += data))
     const exited = Promise.withResolvers<number>()
     child.onExit((event) => exited.resolve(event.exitCode))
-    await Bun.sleep(250)
+    // OpenTUI probes terminal capabilities before the composer is ready. Synchronize on the
+    // rendered prompt instead of racing a fixed startup sleep (slow CI otherwise drops input).
+    for (let attempt = 0; attempt < 250 && !output.includes("Ask anything"); attempt++) await Bun.sleep(20)
+    if (!output.includes("Ask anything")) {
+      throw new Error(`interactive W1 composer did not become ready; tail=${JSON.stringify(output.slice(-4_000))}`)
+    }
     child.write("audit this\r")
     for (let attempt = 0; attempt < 150 && !output.includes("Ready"); attempt++) await Bun.sleep(20)
     for (const expected of ["Inspect runtime", "Ready"]) {
