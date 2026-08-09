@@ -3,7 +3,7 @@ import { createServer } from "node:net"
 import { copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { EngineClient, engineClientVersion, resolveEngine, selectedMessagesAfterSnapshot, type EngineEvent, type ThreadPush, type ThreadSummary } from "./engine"
+import { EngineClient, W1_ENGINE_MAX_FRAME_BYTES, assertEngineFrameBytes, engineClientVersion, resolveEngine, selectedMessagesAfterSnapshot, type EngineEvent, type ThreadPush, type ThreadSummary } from "./engine"
 
 const originalEngine = process.env.W1_ENGINE_PATH
 const originalRuntime = process.env.W1_RUNTIME_PATH
@@ -25,6 +25,11 @@ describe("W1 Engine CLI client", () => {
   test("uses a protocol-safe version for source checkouts", () => {
     expect(engineClientVersion("local")).toBe("0.0.0")
     expect(engineClientVersion("0.1.3")).toBe("0.1.3")
+  })
+
+  test("rejects oversized IPC frames before writing to the daemon socket", () => {
+    expect(() => assertEngineFrameBytes(W1_ENGINE_MAX_FRAME_BYTES - 1)).not.toThrow()
+    expect(() => assertEngineFrameBytes(W1_ENGINE_MAX_FRAME_BYTES)).toThrow("20 MiB")
   })
 
   test("keeps only post-snapshot live messages during selected-thread hydration", () => {

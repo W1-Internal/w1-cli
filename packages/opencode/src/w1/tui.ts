@@ -16,6 +16,13 @@ import {
   type ThreadPush,
   type ThreadSummary,
 } from "./engine"
+import {
+  actorApprovalDecision,
+  appendTransientNarration,
+  assertAttachmentBytes,
+  interactionWasDelivered,
+  isAmbiguousEngineFailure,
+} from "./tui-contract"
 
 type Input = {
   directory: string
@@ -29,6 +36,14 @@ type Input = {
 
 type ToolTab = { tool: string; input: Record<string, unknown>; started: number }
 type PendingInteraction = { kind: "question"; request: QuestionRequest } | { kind: "permission"; request: PermissionRequest }
+type PendingSubmit = {
+  clientRequestId: string
+  workspacePath: string
+  text: string
+  threadId: string
+  attachmentIds?: string[]
+  workerRequest: { runtimeMode: string; first: boolean; model?: string }
+}
 type Controller = {
   id: string
   title: string
@@ -42,8 +57,10 @@ type Controller = {
   assistantPart: string
   assistantOpen: boolean
   sawSay: boolean
+  narration: string
   result?: Record<string, unknown>
   pending?: PendingInteraction
+  pendingSubmit?: PendingSubmit
   tools: Map<string, ToolTab>
   tabs: FooterSubagentState
   subscription?: { close(): Promise<void> }
@@ -155,6 +172,8 @@ function projectConversationItem(event: EngineEvent): ConversationItem | undefin
 function dataUrl(value: string) {
   const match = /^data:([^;,]+);base64,(.*)$/s.exec(value)
   if (!match) throw new Error("W1 could not encode the image attachment.")
+  const padding = match[2].endsWith("==") ? 2 : match[2].endsWith("=") ? 1 : 0
+  assertAttachmentBytes(Math.max(0, Math.floor(match[2].length * 3 / 4) - padding))
   return { mimeType: match[1], base64: match[2] }
 }
 
@@ -172,6 +191,7 @@ function newController(id: string, summary?: ThreadSummary): Controller {
     assistantPart: "",
     assistantOpen: false,
     sawSay: false,
+    narration: "",
     tools: new Map(),
     tabs: { tabs: [], details: {}, permissions: [], questions: [] },
   }
@@ -181,13 +201,15 @@ export async function runW1Tui(input: Input) {
   const location = await resolveEngine()
   if (!location) throw new Error("W1 Engine is missing. Reinstall W1 CLI or set W1_ENGINE_PATH to w1-engine.mjs.")
   const engine = new EngineClient()
-  await engine.connect({ location, clientVersion: engineClientVersion(InstallationVersion) })
-  const auth = await engine.request("auth.snapshot", {}) as { state?: string }
-  if (auth.state !== "signed_in") {
+  const connectEngine = async () => {
+    await engine.connect({ location, clientVersion: engineClientVersion(InstallationVersion) })
+    const auth = await engine.request("auth.snapshot", {}) as { state?: string }
+    if (auth.state === "signed_in") return
     const session = await W1Auth.readSession()
     if (!session) throw new Error("The W1 Engine is signed out. Run `w1 login` and try again.")
     await engine.request("auth.import_existing_session", { token: session.token, ...(session.email ? { email: session.email } : {}) })
   }
+  await connectEngine()
 
   let activeThreadID = input.threadID
   let summaries: ThreadSummary[] = []
@@ -196,6 +218,9 @@ export async function runW1Tui(input: Input) {
   let footer: FooterApi | undefined
   let lifecycle: Lifecycle | undefined
   let elapsedTimer: ReturnType<typeof setInterval> | undefined
+  let catalogSubscription: { close(): Promise<void> } | undefined
+  let closing = false
+  let reconnecting: Promise<void> | undefined
   let initial = await initialAttachments(input, activeThreadID)
 
   const active = () => controllers.get(activeThreadID)
@@ -238,14 +263,18 @@ export async function runW1Tui(input: Input) {
     publishThreads()
   }
 
-  const catalogSubscription = await engine.subscribeWorkspace(
-    { workspacePath: input.directory },
-    (message) => updateSummary(message.thread),
-    (snapshot) => {
-      summaries = [...snapshot.threads]
-        .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))
-    },
-  )
+  const subscribeCatalog = async () => {
+    catalogSubscription = await engine.subscribeWorkspace(
+      { workspacePath: input.directory },
+      (message) => updateSummary(message.thread),
+      (snapshot) => {
+        summaries = [...snapshot.threads]
+          .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))
+        publishThreads()
+      },
+    )
+  }
+  await subscribeCatalog()
 
   const showPending = (controller: Controller) => {
     if (!isVisible(controller)) return
@@ -264,12 +293,14 @@ export async function runW1Tui(input: Input) {
       const type = String(payload.t ?? "")
       if (type === "say_delta") {
         controller.sawSay = true
+        const delta = String(payload.text ?? "")
+        controller.narration = appendTransientNarration(controller.narration, delta)
         if (isVisible(controller)) footer!.event({ type: "stream.patch", patch: { phase: "running", status: "Writing…" } })
         if (!controller.assistantOpen) {
           controller.assistantPart = `assistant-${randomUUID()}`
           controller.assistantOpen = true
         }
-        if (isVisible(controller)) footer!.append({ kind: "assistant", text: String(payload.text ?? ""), phase: "progress", source: "assistant", partID: controller.assistantPart })
+        if (isVisible(controller)) footer!.append({ kind: "assistant", text: delta, phase: "progress", source: "assistant", partID: controller.assistantPart })
         return
       }
       if (type === "think_delta") {
@@ -330,7 +361,21 @@ export async function runW1Tui(input: Input) {
       const request = permission(payload, controller.id)
       requestOwners.set(request.id, controller.id)
       if (input.fullAccess) {
-        await engine.request("turn.respond", { threadId: controller.id, frame: { type: "approval-response", requestId: request.id, approved: true } })
+        try {
+          const acknowledgement = await engine.request("turn.respond", {
+            threadId: controller.id,
+            frame: { type: "approval-response", requestId: request.id, decision: actorApprovalDecision(undefined, true) },
+          })
+          if (interactionWasDelivered(acknowledgement)) return
+        } catch {
+          // The engine reconnect path runs independently; keep the request visible until delivery.
+        }
+        if (!controller.pending) {
+          controller.pending = { kind: "permission", request }
+          controller.state = "awaiting_user"
+          showPending(controller)
+          if (isVisible(controller)) footer!.append(system("W1 could not deliver the automatic approval. The approval is still waiting.", "error"))
+        }
       } else {
         controller.pending = { kind: "permission", request }
         controller.state = "awaiting_user"
@@ -365,6 +410,8 @@ export async function runW1Tui(input: Input) {
       }
     }
     controller.pending = undefined
+    controller.pendingSubmit = undefined
+    controller.narration = ""
   }
 
   const onDurable = async (controller: Controller, event: EngineEvent) => {
@@ -377,6 +424,8 @@ export async function runW1Tui(input: Input) {
       controller.state = "running"
       controller.turnStarted = Date.parse(event.at) || Date.now()
       controller.sawSay = false
+      controller.narration = ""
+      controller.pendingSubmit = undefined
       if (isVisible(controller)) {
         footer!.append({ kind: "user", text: String(event.data.text ?? ""), phase: "final", source: "system", partID: event.eventId })
         footer!.event({ type: "turn.send", queue: 0 })
@@ -427,6 +476,18 @@ export async function runW1Tui(input: Input) {
     await installSnapshot(controller, snapshot)
   }
 
+  const subscribeController = async (controller: Controller) => {
+    controller.hydrated = false
+    controller.buffered = []
+    const subscription = await engine.subscribeThread(
+      { threadId: controller.id, workspacePath: input.directory, afterSequence: 0 },
+      (push) => void onPush(controller, push),
+    )
+    controller.subscription = subscription
+    controller.state = subscription.active ? "running" : controller.state
+    await refreshConversation(controller)
+  }
+
   const ensureController = async (id: string) => {
     const existing = controllers.get(id)
     if (existing) return existing
@@ -434,13 +495,7 @@ export async function runW1Tui(input: Input) {
     const controller = newController(id, summary)
     controllers.set(id, controller)
     try {
-      const subscription = await engine.subscribeThread(
-        { threadId: id, workspacePath: input.directory, afterSequence: 0 },
-        (push) => void onPush(controller, push),
-      )
-      controller.subscription = subscription
-      controller.state = subscription.active ? "running" : controller.state
-      await refreshConversation(controller)
+      await subscribeController(controller)
       return controller
     } catch (cause) {
       controllers.delete(id)
@@ -455,7 +510,7 @@ export async function runW1Tui(input: Input) {
     controller.tools.clear()
     controller.tabs = { tabs: [], details: {}, permissions: [], questions: [] }
     controller.assistantOpen = false
-    controller.sawSay = false
+    controller.sawSay = Boolean(controller.narration)
     const answered = new Set(controller.items.flatMap((item) =>
       item.kind === "user.response" && typeof item.data?.requestId === "string" ? [item.data.requestId] : [],
     ))
@@ -470,6 +525,17 @@ export async function runW1Tui(input: Input) {
         }
       }
     }
+    if ((controller.state === "running" || controller.state === "awaiting_user") && controller.narration) {
+      controller.assistantPart = `assistant-${randomUUID()}`
+      controller.assistantOpen = true
+      footer.append({
+        kind: "assistant",
+        text: controller.narration,
+        phase: "progress",
+        source: "assistant",
+        partID: controller.assistantPart,
+      })
+    }
     footer.event({ type: "stream.subagent", state: structuredClone(controller.tabs) })
     footer.event({ type: "stream.patch", patch: {
       phase: controller.state === "running" || controller.state === "awaiting_user" ? "running" : "idle",
@@ -480,6 +546,19 @@ export async function runW1Tui(input: Input) {
     publishThreads()
   }
 
+  const activateController = async (controller: Controller) => {
+    const previous = activeThreadID
+    activeThreadID = controller.id
+    try {
+      await replay(controller)
+    } catch (cause) {
+      activeThreadID = previous
+      const prior = controllers.get(previous)
+      if (prior) await replay(prior).catch(() => undefined)
+      throw cause
+    }
+  }
+
   const switchThread = async (id: string) => {
     const target = id.trim()
     if (!target || target === activeThreadID) return true
@@ -487,19 +566,50 @@ export async function runW1Tui(input: Input) {
       footer?.append(system(`That task is not in this workspace: ${target}`, "error"))
       return false
     }
-    activeThreadID = target
     const existed = controllers.has(target)
     const controller = await ensureController(target)
     if (existed) await refreshConversation(controller)
-    await replay(controller)
+    await activateController(controller)
     return true
   }
 
   const newThread = async () => {
-    activeThreadID = `cli-${randomUUID()}`
-    const controller = await ensureController(activeThreadID)
-    await replay(controller)
+    const target = `cli-${randomUUID()}`
+    const controller = await ensureController(target)
+    await activateController(controller)
     return true
+  }
+
+  const recoverEngine = async () => {
+    if (closing) throw new Error("W1 is closing.")
+    if (engine.connected) return
+    if (reconnecting) return reconnecting
+    reconnecting = (async () => {
+      let failure: unknown
+      for (const delay of [0, 250, 750, 1_500]) {
+        if (delay) await Bun.sleep(delay)
+        if (closing) throw new Error("W1 is closing.")
+        try {
+          await connectEngine()
+          await subscribeCatalog()
+          for (const controller of controllers.values()) {
+            controller.subscription = undefined
+            await subscribeController(controller)
+          }
+          const controller = active()
+          if (controller && footer) await replay(controller)
+          footer?.append(system("Reconnected to W1 Engine. Background tasks and the selected task were restored."))
+          return
+        } catch (cause) {
+          failure = cause
+          engine.close()
+        }
+      }
+      throw failure instanceof Error ? failure : new Error(String(failure ?? "W1 Engine reconnect failed."))
+    })().finally(() => {
+      reconnecting = undefined
+    })
+    return reconnecting
   }
 
   const initialController = await ensureController(activeThreadID)
@@ -524,21 +634,38 @@ export async function runW1Tui(input: Input) {
     },
     async onPermissionReply(next) {
       const threadId = requestOwners.get(next.requestID) ?? activeThreadID
-      await engine.request("turn.respond", { threadId, frame: { type: "approval-response", requestId: next.requestID, approved: next.reply !== "reject" } })
+      const acknowledgement = await engine.request("turn.respond", {
+        threadId,
+        frame: { type: "approval-response", requestId: next.requestID, decision: actorApprovalDecision(next.reply) },
+      })
+      if (!interactionWasDelivered(acknowledgement)) {
+        footer?.append(system("W1 could not deliver that approval. It is still waiting for your decision.", "error"))
+        return
+      }
       const controller = controllers.get(threadId)
       if (controller?.pending?.request.id === next.requestID) controller.pending = undefined
       if (threadId === activeThreadID) footer?.event({ type: "stream.view", view: { type: "prompt" } })
     },
     async onQuestionReply(next) {
       const threadId = requestOwners.get(next.requestID) ?? activeThreadID
-      await engine.request("turn.respond", { threadId, frame: { type: "question-response", requestId: next.requestID, answer: next.answers?.flat().join(", ") ?? "" } })
+      const acknowledgement = await engine.request("turn.respond", { threadId, frame: { type: "question-response", requestId: next.requestID, answer: next.answers?.flat().join(", ") ?? "" } })
+      if (!interactionWasDelivered(acknowledgement)) {
+        footer?.append(system("W1 could not deliver that answer. It is still waiting for your response.", "error"))
+        return
+      }
       const controller = controllers.get(threadId)
       if (controller?.pending?.request.id === next.requestID) controller.pending = undefined
       if (threadId === activeThreadID) footer?.event({ type: "stream.view", view: { type: "prompt" } })
     },
     async onQuestionReject(next) {
       const threadId = requestOwners.get(next.requestID) ?? activeThreadID
-      await engine.request("turn.respond", { threadId, frame: { type: "question-response", requestId: next.requestID, answer: "" } })
+      const acknowledgement = await engine.request("turn.respond", { threadId, frame: { type: "question-response", requestId: next.requestID, answer: "" } })
+      if (!interactionWasDelivered(acknowledgement)) {
+        footer?.append(system("W1 could not dismiss that question. It is still waiting for your response.", "error"))
+        return
+      }
+      const controller = controllers.get(threadId)
+      if (controller?.pending?.request.id === next.requestID) controller.pending = undefined
       if (threadId === activeThreadID) footer?.event({ type: "stream.view", view: { type: "prompt" } })
     },
     onInterrupt() {
@@ -552,50 +679,82 @@ export async function runW1Tui(input: Input) {
     onThreadNew: newThread,
   })
   footer = lifecycle.footer
-  await replay(initialController)
+  const removeDisconnectListener = engine.onDisconnect(() => {
+    if (closing) return
+    footer?.event({ type: "stream.patch", patch: { status: "Reconnecting to W1 Engine…" } })
+    void recoverEngine().catch((cause) => {
+      footer?.append(system(`W1 Engine reconnect failed: ${cause instanceof Error ? cause.message : String(cause)}`, "error"))
+    })
+  })
+
+  const submitTurn = async (controller: Controller, submission: PendingSubmit) => {
+    controller.pendingSubmit = submission
+    try {
+      await engine.request("turn.submit", submission)
+      controller.pendingSubmit = undefined
+    } catch (cause) {
+      if (!isAmbiguousEngineFailure(cause)) {
+        controller.pendingSubmit = undefined
+        throw cause
+      }
+      try {
+        await recoverEngine()
+        await engine.request("turn.submit", submission)
+        controller.pendingSubmit = undefined
+      } catch (retryCause) {
+        if (!isAmbiguousEngineFailure(retryCause)) controller.pendingSubmit = undefined
+        throw retryCause
+      }
+    }
+  }
 
   const closed = Promise.withResolvers<void>()
   footer.onClose(() => closed.resolve())
   footer.onPrompt((prompt) => void (async () => {
     const controller = active()
     if (!controller) return
-    if (controller.state === "running" || controller.state === "awaiting_user") {
-      footer!.append(system("This task is still working. Use /new or /resume to switch without stopping it.", "error"))
-      return
+    try {
+      if (controller.state === "running" || controller.state === "awaiting_user") {
+        footer!.append(system("This task is still working. Use /new or /resume to switch without stopping it.", "error"))
+        return
+      }
+      if (!engine.connected) await recoverEngine()
+      const queued = initial.splice(0)
+      const combined: RunPrompt = { ...prompt, parts: [...prompt.parts, ...queued.map((item) => item.part)] }
+      const paths = attachmentPaths(combined)
+      const reminder = paths.length
+        ? `\n\n<system-reminder>Attached images are stored locally at:\n${paths.map((item) => `- ${item}`).join("\n")}\nUse view_image when visual inspection is needed.</system-reminder>`
+        : ""
+      const attachmentIds = await Promise.all(attachmentImages(combined).map(async (image) => {
+        const encoded = dataUrl(image)
+        const ack = await engine.request("engine.attachment.put", encoded) as { attachmentId: string }
+        return ack.attachmentId
+      }))
+      const submission: PendingSubmit = {
+        clientRequestId: randomUUID(),
+        workspacePath: input.directory,
+        text: prompt.text + reminder,
+        threadId: controller.id,
+        ...(attachmentIds.length ? { attachmentIds } : {}),
+        workerRequest: {
+          runtimeMode: input.fullAccess ? "full-access" : "approval-required",
+          first: controller.items.length === 0,
+          ...(input.model ? { model: input.model } : {}),
+        },
+      }
+      controller.turnStarted = Date.now()
+      controller.state = "running"
+      controller.sawSay = false
+      controller.narration = ""
+      await submitTurn(controller, submission)
+      initial = []
+    } catch (cause) {
+      if (!isAmbiguousEngineFailure(cause)) controller.state = "failed"
+      footer?.event({ type: "turn.idle", queue: 0 })
+      footer?.append(system(cause instanceof Error ? cause.message : String(cause), "error"))
     }
-    const queued = initial.splice(0)
-    const combined: RunPrompt = { ...prompt, parts: [...prompt.parts, ...queued.map((item) => item.part)] }
-    const paths = attachmentPaths(combined)
-    const reminder = paths.length
-      ? `\n\n<system-reminder>Attached images are stored locally at:\n${paths.map((item) => `- ${item}`).join("\n")}\nUse view_image when visual inspection is needed.</system-reminder>`
-      : ""
-    const attachmentIds = await Promise.all(attachmentImages(combined).map(async (image) => {
-      const encoded = dataUrl(image)
-      const ack = await engine.request("engine.attachment.put", encoded) as { attachmentId: string }
-      return ack.attachmentId
-    }))
-    controller.turnStarted = Date.now()
-    controller.state = "running"
-    controller.sawSay = false
-    await engine.request("turn.submit", {
-      clientRequestId: randomUUID(),
-      workspacePath: input.directory,
-      text: prompt.text + reminder,
-      threadId: controller.id,
-      ...(attachmentIds.length ? { attachmentIds } : {}),
-      workerRequest: {
-        runtimeMode: input.fullAccess ? "full-access" : "approval-required",
-        first: controller.items.length === 0,
-        ...(input.model ? { model: input.model } : {}),
-      },
-    })
-    initial = []
-  })().catch((cause) => {
-    const controller = active()
-    if (controller) controller.state = "failed"
-    footer?.event({ type: "turn.idle", queue: 0 })
-    footer?.append(system(cause instanceof Error ? cause.message : String(cause), "error"))
-  }))
+  })())
+  await replay(initialController)
 
   elapsedTimer = setInterval(() => {
     const controller = active()
@@ -608,13 +767,20 @@ export async function runW1Tui(input: Input) {
   try {
     await closed.promise
   } finally {
+    closing = true
+    removeDisconnectListener()
     if (elapsedTimer) clearInterval(elapsedTimer)
-    await Promise.allSettled([
-      catalogSubscription.close(),
+    const running = summaries.filter((item) => item.state === "running" || item.state === "awaiting_user").length
+    const unsubscribe = Promise.allSettled([
+      ...(catalogSubscription ? [catalogSubscription.close()] : []),
       ...[...controllers.values()].flatMap((controller) => controller.subscription ? [controller.subscription.close()] : []),
     ])
+    await Promise.race([unsubscribe, Bun.sleep(900)])
     engine.close()
     await lifecycle.close({ showExit: true, sessionID: activeThreadID, history: history(active()?.items ?? []) })
+    process.stdout.write(running
+      ? `W1 closed. ${running} background task${running === 1 ? " is" : "s are"} still running; start W1 again and use /resume.\n`
+      : "W1 closed. Closing the CLI does not stop engine-owned background tasks; use /resume when you return.\n")
   }
 }
 

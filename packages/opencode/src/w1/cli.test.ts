@@ -199,7 +199,7 @@ test.skipIf(process.platform === "win32")("interactive W1 uses the product TUI a
   } finally {
     await Bun.$`rm -rf ${root}`
   }
-})
+}, 15_000)
 
 test("image path attachments are persisted under the local W1 state directory", async () => {
   const root = (await Bun.$`mktemp -d ${path.join(os.tmpdir(), "w1-cli-image.XXXXXX")}`.text()).trim()

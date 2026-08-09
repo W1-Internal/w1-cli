@@ -7,6 +7,14 @@ import { createConnection, type Socket } from "node:net"
 import { validateW1RuntimePackage } from "./runtime-manifest"
 
 export const W1_ENGINE_PROTOCOL_VERSION = 1
+export const W1_ENGINE_MAX_FRAME_BYTES = 20 * 1024 * 1024
+const W1_ENGINE_UNSUBSCRIBE_TIMEOUT_MS = 750
+
+export function assertEngineFrameBytes(byteLength: number) {
+  if (!Number.isSafeInteger(byteLength) || byteLength < 0 || byteLength >= W1_ENGINE_MAX_FRAME_BYTES) {
+    throw new Error("W1 Engine request is too large for the 20 MiB IPC frame limit.")
+  }
+}
 
 export function engineClientVersion(value: string) {
   return /^v?\d+\.\d+\.\d+(?:[-+].*)?$/.test(value.trim()) ? value.trim() : "0.0.0"
@@ -204,11 +212,17 @@ export class EngineClient {
   private readonly subscriptions = new Map<string, Subscription>()
   private readonly workspaceSubscriptions = new Map<string, WorkspaceSubscription>()
   private readonly orphanMessages = new Map<string, EnginePush[]>()
+  private readonly disconnectListeners = new Set<() => void>()
 
   constructor(readonly endpoint = resolveEndpoint()) {}
 
   get connected() {
     return this.socket?.writable === true && !this.socket.destroyed
+  }
+
+  onDisconnect(listener: () => void) {
+    this.disconnectListeners.add(listener)
+    return () => this.disconnectListeners.delete(listener)
   }
 
   async connect(input: {
@@ -396,7 +410,8 @@ export class EngineClient {
       }
     })
     socket.on("close", () => {
-      if (this.socket === socket) this.socket = undefined
+      const current = this.socket === socket
+      if (current) this.socket = undefined
       this.buffer = ""
       for (const pending of this.pending.values()) {
         clearTimeout(pending.timer)
@@ -406,19 +421,28 @@ export class EngineClient {
       this.subscriptions.clear()
       this.workspaceSubscriptions.clear()
       this.orphanMessages.clear()
+      if (current) {
+        for (const listener of this.disconnectListeners) listener()
+      }
     })
   }
 
   request(method: string, params: unknown, timeoutMs = 15_000) {
     if (!this.socket?.writable) return Promise.reject(new Error("W1 Engine is not connected."))
     const id = randomUUID()
+    const frame = `${JSON.stringify({ id, protocolVersion: W1_ENGINE_PROTOCOL_VERSION, method, params })}\n`
+    try {
+      assertEngineFrameBytes(Buffer.byteLength(frame))
+    } catch (cause) {
+      return Promise.reject(cause)
+    }
     return new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id)
         reject(new Error(`W1 Engine request timed out: ${method}`))
       }, timeoutMs)
       this.pending.set(id, { resolve, reject, timer })
-      this.socket!.write(`${JSON.stringify({ id, protocolVersion: W1_ENGINE_PROTOCOL_VERSION, method, params })}\n`)
+      this.socket!.write(frame)
     })
   }
 
@@ -448,7 +472,7 @@ export class EngineClient {
       close: async () => {
         this.subscriptions.delete(result.subscriptionId)
         this.orphanMessages.delete(result.subscriptionId)
-        await this.request("events.unsubscribe", { subscriptionId: result.subscriptionId })
+        await this.request("events.unsubscribe", { subscriptionId: result.subscriptionId }, W1_ENGINE_UNSUBSCRIBE_TIMEOUT_MS)
       },
     }
   }
@@ -479,7 +503,7 @@ export class EngineClient {
       close: async () => {
         this.workspaceSubscriptions.delete(result.subscriptionId)
         this.orphanMessages.delete(result.subscriptionId)
-        await this.request("catalog.unsubscribe", { subscriptionId: result.subscriptionId })
+        await this.request("catalog.unsubscribe", { subscriptionId: result.subscriptionId }, W1_ENGINE_UNSUBSCRIBE_TIMEOUT_MS)
       },
     }
   }
