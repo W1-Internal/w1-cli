@@ -41,11 +41,23 @@ jobs:
           bun test test/cli/run/footer.view.test.tsx
           --test-name-pattern "direct command panel (shows subagent entry|keeps completed subagents available)"
 
-      - name: Run focused footer statusline contracts
+      - name: Run busy footer statusline contract
         working-directory: packages/opencode
         run: >-
           bun test test/cli/run/footer.view.test.tsx
-          --test-name-pattern "direct footer (shows editable prompts|separates a lone context hint|hides the subagent hint)"
+          --test-name-pattern "direct footer shows editable prompts"
+
+      - name: Run responsive footer statusline contract
+        working-directory: packages/opencode
+        run: >-
+          bun test test/cli/run/footer.view.test.tsx
+          --test-name-pattern "direct footer separates a lone context hint"
+
+      - name: Run completed-agent footer statusline contract
+        working-directory: packages/opencode
+        run: >-
+          bun test test/cli/run/footer.view.test.tsx
+          --test-name-pattern "direct footer hides the subagent hint"
 
       - name: Run complete footer rendering contracts
         working-directory: packages/opencode
