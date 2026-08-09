@@ -915,7 +915,7 @@ export function RunFooterView(props: RunFooterViewProps) {
 
                 <For each={contextHints()}>
                   {(hint, index) => (
-                    <box paddingRight={1} backgroundColor="transparent" flexShrink={0} maxWidth={24}>
+                    <box paddingRight={1} backgroundColor="transparent" flexShrink={0} maxWidth={32}>
                       <text fg={theme().text} wrapMode="none" truncate>
                         <Show when={index() > 0 || ((hasActivityMeta() || hasModelStatus()) && index() === 0)}>
                           {sectionSeparator()}
