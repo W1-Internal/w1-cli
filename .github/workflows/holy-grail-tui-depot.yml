@@ -31,12 +31,13 @@ jobs:
       - name: Typecheck repository
         run: bun typecheck
 
-      - name: Run focused W1 TUI contracts
+      - name: Run focused W1 command contracts
         working-directory: packages/opencode
-        run: >-
-          bun test
-          src/w1/cli.test.ts
-          test/cli/run/footer.view.test.tsx
+        run: bun test src/w1/cli.test.ts
+
+      - name: Run focused footer rendering contracts
+        working-directory: packages/opencode
+        run: bun test test/cli/run/footer.view.test.tsx
 
       - name: Run OpenCode package unit suite
         working-directory: packages/opencode
