@@ -278,7 +278,11 @@ jobs:
       - name: Install downloaded Linux packages and invoke the real meta launcher
         run: |
           prefix="$RUNNER_TEMP/w1-extracted-prefix"
+          tarballs="$RUNNER_TEMP/w1-extracted-tarballs"
+          mkdir -p "$tarballs"
+          npm pack "$GITHUB_WORKSPACE/linux-artifact/w1-cli-linux-x64" --pack-destination "$tarballs" >/dev/null
+          npm pack "$GITHUB_WORKSPACE/linux-artifact/w1-cli" --pack-destination "$tarballs" >/dev/null
           npm install --prefix "$prefix" --ignore-scripts \
-            "$GITHUB_WORKSPACE/linux-artifact/w1-cli-linux-x64" \
-            "$GITHUB_WORKSPACE/linux-artifact/w1-cli"
+            "$tarballs/w1-cli-linux-x64-0.1.4-next.0.tgz" \
+            "$tarballs/w1-cli-0.1.4-next.0.tgz"
           test "$("$prefix/node_modules/.bin/w1" --version)" = "0.1.4-next.0"
