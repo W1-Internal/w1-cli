@@ -100,6 +100,9 @@ function rgba(hex: string, value?: number): RGBA {
   return value === undefined ? color : alpha(color, value)
 }
 
+/** W1 brand olive, the same value the sign-in page uses. */
+const W1_OLIVE = RGBA.fromHex("#bccb4f")
+
 function mode(bg: RGBA): "dark" | "light" {
   return luminance(bg) > 0.5 ? "light" : "dark"
 }
@@ -442,7 +445,9 @@ export function generateSystem(colors: TerminalColors, pick: "dark" | "light"): 
       markdownHeading: fg,
       markdownLink: ansi.blue,
       markdownLinkText: ansi.cyan,
-      markdownCode: ansi.green,
+      // W1 brand olive. Tool names and identifiers arrive as markdown code spans, so this token is
+      // the most visible colour in a turn — it belongs to the brand, not to the terminal's ANSI green.
+      markdownCode: W1_OLIVE,
       markdownBlockQuote: ansi.yellow,
       markdownEmph: ansi.yellow,
       markdownStrong: fg,
