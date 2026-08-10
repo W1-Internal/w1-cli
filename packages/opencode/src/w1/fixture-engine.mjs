@@ -4,7 +4,22 @@ import { homedir } from "node:os"
 import path from "node:path"
 import { createServer } from "node:net"
 
-const root = process.env.W1_ENGINE_STATE_DIR || path.join(homedir(), ".w1", "engine", "v1")
+// The fixture stands in for the real engine, so it has to bind where the real engine binds. It
+// hardcoded the legacy shared root and ignored W1_CLIENT_SURFACE — the same rule the CLI client
+// had wrong in 0.2.4 and 0.2.5 — so the moment the client started resolving per-surface correctly,
+// the two sat on different sockets and the composer never came up. A stub that models the OLD
+// behaviour turns a correct fix into a red test.
+const surfaceSlug = (process.env.W1_CLIENT_SURFACE ?? "")
+  .trim()
+  .toLowerCase()
+  .replace(/[^a-z0-9-]+/g, "-")
+  .replace(/^-+|-+$/g, "")
+  .slice(0, 32)
+const root =
+  process.env.W1_ENGINE_STATE_DIR ||
+  (surfaceSlug && surfaceSlug !== "shared"
+    ? path.join(homedir(), ".w1", "engine", "surfaces", surfaceSlug, "v1")
+    : path.join(homedir(), ".w1", "engine", "v1"))
 const endpoint = path.join(root, "ipc", "w1-v1.sock")
 const buildId = readFileSync(path.join(path.dirname(new URL(import.meta.url).pathname), "BUILD_ID"), "utf8").trim()
 mkdirSync(path.dirname(endpoint), { recursive: true })
