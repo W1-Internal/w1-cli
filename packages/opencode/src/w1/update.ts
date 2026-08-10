@@ -148,6 +148,12 @@ function runNpmUpdateOnce(version: string): Promise<UpdateOutcome> {
           // Never leave the user guessing whether they still have a CLI. A failed replace can
           // remove the old package outright, and "update failed" does not tell them that `w1` is
           // now gone or how to get it back.
+          // A retry that lands on "current" is npm telling us the requested version is already
+          // in place — that is a finished update, not a failure to report.
+          if (retry.status !== "failed") {
+            resolve(retry)
+            return
+          }
           const present = await packageInstalled()
           resolve({
             status: "failed",
@@ -169,7 +175,14 @@ function runNpmUpdateOnce(version: string): Promise<UpdateOutcome> {
 /**
  * Installs the latest release globally. Uses the same command a user would type, so whatever
  * permissions their npm prefix needs are the permissions they already have.
+ *
+ * Staging leftovers are cleared BEFORE the install, not only after a failure. Recovering from
+ * ENOTEMPTY is the second line of defence; the first is not walking into it, because the wreck it
+ * leaves behind — an emptied `@w1-lab/` and no `w1` on the machine — is the one failure a CLI
+ * cannot repair from, having just deleted itself. A stale `.cli-<random>` from a previous crashed
+ * update is exactly what makes the next one fail, so it is swept every time.
  */
-export function runNpmUpdate(version = "latest"): Promise<UpdateOutcome> {
+export async function runNpmUpdate(version = "latest"): Promise<UpdateOutcome> {
+  await clearNpmStaging()
   return runNpmUpdateOnce(version)
 }
