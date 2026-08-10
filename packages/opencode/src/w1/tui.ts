@@ -815,14 +815,39 @@ export async function runW1Tui(input: Input) {
       const queued = initial.splice(0)
       const combined: RunPrompt = { ...prompt, parts: [...prompt.parts, ...queued.map((item) => item.part)] }
       const paths = attachmentPaths(combined)
-      const reminder = paths.length
-        ? `\n\n<system-reminder>Attached images are stored locally at:\n${paths.map((item) => `- ${item}`).join("\n")}\nUse view_image when visual inspection is needed.</system-reminder>`
-        : ""
       const attachmentIds = await Promise.all(attachmentImages(combined).map(async (image) => {
         const encoded = dataUrl(image)
         const ack = await engine.request("engine.attachment.put", encoded) as { attachmentId: string }
         return ack.attachmentId
       }))
+      // Tell the model the HANDLES, not just where the bytes sit on disk.
+      //
+      // The reminder used to list local file paths only, so a model asked to look at an image had
+      // no handle to use and invented one from the visible filename —
+      // view_image {"path":"attachment:WhatsApp Image 2026-07-27 at 20.29.54.jpeg"} — which is not
+      // a handle and always failed. Naming the real handles removes the guess.
+      //
+      // The engine ids the same bytes as `sha256:<full hex>` while view_image handles are
+      // `attachment:<first 12 of that hex>`. Two spellings of one identity; convert rather than
+      // leave the model to reconcile them.
+      const handles = attachmentIds.flatMap((id) => {
+        const hex = /^sha256:([a-f0-9]{64})$/.exec(id)?.[1]
+        return hex ? [`attachment:${hex.slice(0, 12)}`] : []
+      })
+      const reminderLines = [
+        ...(handles.length
+          ? [
+              `Attached images, ready for view_image (pass the handle as "path"):`,
+              ...handles.map((handle, index) => `- ${handle}${paths[index] ? ` (${paths[index]})` : ""}`),
+            ]
+          : []),
+        ...(handles.length === 0 && paths.length
+          ? [`Attached images are stored locally at:`, ...paths.map((item) => `- ${item}`)]
+          : []),
+      ]
+      const reminder = reminderLines.length
+        ? `\n\n<system-reminder>${reminderLines.join("\n")}\nUse view_image when visual inspection is needed. Do not invent a handle from a filename.</system-reminder>`
+        : ""
       const submission: PendingSubmit = {
         clientRequestId: randomUUID(),
         workspacePath: input.directory,
