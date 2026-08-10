@@ -127,17 +127,50 @@ type RpcResponse =
   | { id: string; ok: true; result: unknown }
   | { id: string; ok: false; error: { code: string; message: string; retryable: boolean; structural?: Record<string, unknown> } }
 
-function resolveEndpoint() {
+/** Mirrors the engine's normalizeSurface (src/engine/state.ts). Both sides must slug identically. */
+const W1_LEGACY_SHARED_SURFACE = "shared"
+
+export function normalizeEngineSurface(raw: string | undefined) {
+  const slug = (raw ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+  return slug.length > 0 ? slug.slice(0, 32) : W1_LEGACY_SHARED_SURFACE
+}
+
+/**
+ * Where this CLI's engine listens.
+ *
+ * This function is one half of a contract whose other half lives in a different repository
+ * (`resolveW1EngineEndpoint` in the harness). It ignored the surface entirely while the engine it
+ * spawns honours `W1_CLIENT_SURFACE`, so the client waited on `~/.w1/engine/v1/ipc/w1-v1.sock`
+ * while the engine bound `~/.w1/engine/surfaces/cli/v1/ipc/w1-v1.sock` and every run died with
+ * `connect ENOENT`. That is 0.2.4 and 0.2.5, broken for every user on a clean machine — including
+ * the ones "fixed" by setting W1_CLIENT_SURFACE on this process, because nothing here ever read it.
+ *
+ * Verified by running both sides, not by reading either: see the endpoint-parity test.
+ */
+export function resolveEndpoint() {
+  const surface = normalizeEngineSurface(process.env.W1_CLIENT_SURFACE)
   if (process.platform === "win32") {
+    // Named pipes are one flat global namespace, so the surface has to live in the NAME — there is
+    // no directory to isolate it with, unlike the unix path below.
     const owner = createHash("sha256").update(`${userInfo().username}\0${homedir()}`).digest("hex").slice(0, 16)
-    return `\\\\.\\pipe\\w1-${owner}-v${W1_ENGINE_PROTOCOL_VERSION}`
+    const suffix = surface === W1_LEGACY_SHARED_SURFACE ? "" : `-${surface}`
+    return `\\\\.\\pipe\\w1-${owner}${suffix}-v${W1_ENGINE_PROTOCOL_VERSION}`
   }
   const configured = process.env.W1_ENGINE_STATE_DIR?.trim()
-  return path.join(
-    configured ? path.resolve(configured) : path.join(homedir(), ".w1", "engine", `v${W1_ENGINE_PROTOCOL_VERSION}`),
-    "ipc",
-    `w1-v${W1_ENGINE_PROTOCOL_VERSION}.sock`,
-  )
+  if (configured) {
+    return path.join(path.resolve(configured), "ipc", `w1-v${W1_ENGINE_PROTOCOL_VERSION}.sock`)
+  }
+  // Surface roots are SIBLINGS of the shared root, never children of it — nesting them makes the
+  // history seed a self-copy, which fails and leaves the surface with an empty journal.
+  const root =
+    surface === W1_LEGACY_SHARED_SURFACE
+      ? path.join(homedir(), ".w1", "engine", `v${W1_ENGINE_PROTOCOL_VERSION}`)
+      : path.join(homedir(), ".w1", "engine", "surfaces", surface, `v${W1_ENGINE_PROTOCOL_VERSION}`)
+  return path.join(root, "ipc", `w1-v${W1_ENGINE_PROTOCOL_VERSION}.sock`)
 }
 
 async function readBuildId(folder: string) {
