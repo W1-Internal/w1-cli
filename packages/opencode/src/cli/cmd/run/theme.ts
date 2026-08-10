@@ -550,7 +550,11 @@ function map(
         body: scrollbackTheme.textMuted,
       },
       user: {
-        body: scrollbackTheme.primary,
+        // Not scrollbackTheme.primary: that is an ANSI slot, and the host terminal decides what the
+        // slot looks like. The identical build rendered muted on macOS and bright blue on Windows
+        // Terminal. The "› " prefix already marks these lines, so plain foreground reads the same
+        // everywhere.
+        body: scrollbackTheme.text,
       },
       assistant: {
         body: scrollbackTheme.text,
@@ -630,7 +634,9 @@ export const RUN_THEME_FALLBACK: RunTheme = {
   },
   entry: {
     system: tone(seed.muted),
-    user: tone(seed.highlight),
+    // Matches the themed path: user lines use plain foreground so they read the same on every host
+    // terminal. The "› " prefix is what marks them, not the colour.
+    user: tone(seed.text),
     assistant: tone(seed.text),
     reasoning: tone(seed.muted),
     tool: tone(seed.text, seed.muted),
