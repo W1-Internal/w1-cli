@@ -138,7 +138,14 @@ test("--yolo enables full access and shows activity without exposing reasoning",
 })
 
 test.skipIf(process.platform === "win32")("interactive W1 uses the product TUI and renders runtime state", async () => {
-  const root = (await Bun.$`mktemp -d ${path.join(os.tmpdir(), "w1-cli-tui.XXXXXX")}`.text()).trim()
+  // A unix socket path is capped at 104 bytes on macOS (108 on Linux) — the limit is on the path,
+  // not the directory. macOS's per-user TMPDIR is ~49 bytes on its own, and the engine's endpoint
+  // adds `/.w1/engine/surfaces/cli/v1/ipc/w1-v1.sock` (42), which crosses it and makes listen fail
+  // with nothing on stdout: the composer simply never appears. That is a property of this
+  // temporary directory, not of the product — a real home gives `/Users/<name>/.w1/…` at roughly
+  // 55 bytes. Keep the fixture root short so this exercises the endpoint rule instead of the
+  // platform's path limit.
+  const root = (await Bun.$`mktemp -d ${path.join("/tmp", "w1t.XXXXXX")}`.text()).trim()
   const runtime = path.join(root, "mock-runtime.mjs")
   const received = path.join(root, "received-turn.json")
   const image = path.join(root, "reference.png")
