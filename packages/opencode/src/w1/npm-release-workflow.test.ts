@@ -40,6 +40,14 @@ describe("W1 npm release workflow", () => {
     expect(workflow).not.toContain("npm publish release/npm/")
   })
 
+  test("records checksums as bare filenames so they survive artifact transport", async () => {
+    const workflow = await readFile(workflowPath, "utf8")
+    // sha256sum stores paths verbatim. Recording "dist/npm-packed/x.tgz" makes the manifest
+    // unverifiable from the directory it is downloaded into, which fails the release at the last gate.
+    expect(workflow).toContain("( cd dist/npm-packed && sha256sum *.tgz > SHA256SUMS.txt )")
+    expect(workflow).not.toContain("sha256sum dist/npm-packed/*.tgz >")
+  })
+
   test("gates unsafe tarball contents before anything is published", async () => {
     const workflow = await readFile(workflowPath, "utf8")
     const gate = workflow.indexOf("Reject unsafe tarball contents")

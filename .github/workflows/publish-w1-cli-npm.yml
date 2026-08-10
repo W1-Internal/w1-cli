@@ -148,7 +148,9 @@ jobs:
             packed="$(npm pack "$package" --pack-destination dist/npm-packed --json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s)[0].filename))')"
             mv "dist/npm-packed/$packed" "dist/npm-packed/$name.tgz"
           done
-          sha256sum dist/npm-packed/*.tgz > dist/npm-packed/SHA256SUMS.txt
+          # Record bare filenames so the manifest verifies from whatever directory it is transported
+          # into. sha256sum stores paths verbatim, and the publish job checks from inside the folder.
+          ( cd dist/npm-packed && sha256sum *.tgz > SHA256SUMS.txt )
 
       - name: Reject unsafe tarball contents
         working-directory: packages/opencode
