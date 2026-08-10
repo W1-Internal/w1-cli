@@ -273,4 +273,15 @@ jobs:
           npm dist-tag add @w1-lab/cli-darwin-x64-baseline@"$VERSION" latest
           npm dist-tag add @w1-lab/cli-windows-x64@"$VERSION" latest
           npm dist-tag add @w1-lab/cli@"$VERSION" latest
-          test "$(npm view @w1-lab/cli dist-tags.latest)" = "$VERSION"
+          # dist-tags are eventually consistent too, exactly like the packument read above. A single
+          # assert here reported 0.2.3 as a FAILED release that had in fact published everything and
+          # promoted it correctly — the second false failure of the day from the same cause. Poll.
+          for attempt in $(seq 1 30); do
+            if [ "$(npm view @w1-lab/cli dist-tags.latest 2>/dev/null)" = "$VERSION" ]; then
+              echo "latest -> $VERSION after ${attempt} attempt(s)"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "latest never advanced to $VERSION" >&2
+          exit 1
