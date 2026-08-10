@@ -452,8 +452,10 @@ export function generateSystem(colors: TerminalColors, pick: "dark" | "light"): 
       markdownEmph: ansi.yellow,
       markdownStrong: fg,
       markdownHorizontalRule: grays[7],
-      markdownListItem: ansi.blue,
-      markdownListEnumeration: ansi.cyan,
+      // Bullet dashes are W1 olive rather than an ANSI slot. ANSI slots are remapped by the host
+      // terminal, so Windows Terminal rendered these noticeably brighter than macOS.
+      markdownListItem: W1_OLIVE,
+      markdownListEnumeration: W1_OLIVE,
       markdownImage: ansi.blue,
       markdownImageText: ansi.cyan,
       markdownCodeBlock: fg,

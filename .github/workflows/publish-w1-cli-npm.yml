@@ -243,8 +243,21 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
+          # The registry serves a freshly published version's aggregated packument a little after the
+          # publish returns, so an immediate read reports 404 and fails a release that actually
+          # succeeded. Poll instead of asserting once.
           for package in @w1-lab/cli-darwin-arm64 @w1-lab/cli-darwin-x64 @w1-lab/cli-darwin-x64-baseline @w1-lab/cli-windows-x64 @w1-lab/cli; do
-            test "$(npm view "$package@$VERSION" version)" = "$VERSION"
+            for attempt in $(seq 1 30); do
+              if [ "$(npm view "$package@$VERSION" version 2>/dev/null)" = "$VERSION" ]; then
+                echo "$package@$VERSION visible after ${attempt} attempt(s)"
+                break
+              fi
+              if [ "$attempt" -eq 30 ]; then
+                echo "$package@$VERSION never became visible on the registry" >&2
+                exit 1
+              fi
+              sleep 10
+            done
           done
           # The published meta package must only depend on names inside the owned scope.
           npm view "@w1-lab/cli@$VERSION" optionalDependencies --json \

@@ -59,6 +59,14 @@ describe("W1 npm release workflow", () => {
     expect(workflow).toContain("Refusing tarball with credential or sourcemap content")
   })
 
+  test("waits for registry visibility instead of failing a successful release", async () => {
+    const workflow = await readFile(workflowPath, "utf8")
+    // A freshly published version is not immediately readable, so asserting once reported a
+    // false failure on two real releases that had actually published every package.
+    expect(workflow).toContain("never became visible on the registry")
+    expect(workflow).toMatch(/for attempt in \$\(seq 1 30\)/)
+  })
+
   test("every published identity lives inside the owned scope", async () => {
     const workflow = await readFile(workflowPath, "utf8")
     for (const name of [
