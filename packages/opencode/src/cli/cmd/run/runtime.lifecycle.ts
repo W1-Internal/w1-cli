@@ -83,6 +83,8 @@ export type LifecycleInput = {
   onThreadCatalogRequest?: FooterThreadCatalogRequest
   onThreadSelect?: FooterThreadSelect
   onThreadNew?: FooterThreadNew
+  /** Runs the self-update. Absent when the surface cannot update itself. */
+  onUpdate?: () => void | Promise<void>
   onThreadArchive?: FooterThreadArchive
   onPasteAttachment?: (text: string) => Promise<RunPromptPaste | undefined>
   brand?: "w1"
@@ -278,6 +280,7 @@ export async function createRuntimeLifecycle(input: LifecycleInput): Promise<Lif
       onThreadCatalogRequest: input.onThreadCatalogRequest,
       onThreadSelect: input.onThreadSelect,
       onThreadNew: input.onThreadNew,
+      onUpdate: input.onUpdate,
       onThreadArchive: input.onThreadArchive,
       onEditorOpen: async ({ value }) => {
         if (closed || renderer.isDestroyed) {

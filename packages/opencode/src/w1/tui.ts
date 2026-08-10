@@ -5,6 +5,7 @@ import { createRuntimeLifecycle, type Lifecycle } from "@/cli/cmd/run/runtime.li
 import { resolveRunTuiConfig } from "@/cli/cmd/run/runtime.boot"
 import type { FooterApi, FooterSubagentState, RunPrompt, StreamCommit } from "@/cli/cmd/run/types"
 import { createW1Attachments } from "./attachments"
+import { isNewerVersion, latestPublishedVersion, runNpmUpdate } from "./update"
 import { W1Auth } from "./auth"
 import {
   EngineClient,
@@ -663,6 +664,44 @@ export async function runW1Tui(input: Input) {
     return reconnecting
   }
 
+  let updating = false
+
+  /**
+   * Tells the user, once per launch, that updates are self-service. Deliberately synchronous and
+   * offline: a registry read here would either delay the first prompt or land a surprise line in the
+   * middle of a conversation once it finally resolved. /update does the network check on demand.
+   */
+  const announceUpdates = () => {
+    footer?.append(system(`W1 ${clientVersion} · run /update to install the latest version.`, "system", true))
+  }
+
+  const runSelfUpdate = async () => {
+    if (updating) return
+    updating = true
+    footer?.append(system("Updating W1…", "system", true))
+    try {
+      const latest = await latestPublishedVersion()
+      if (latest && !isNewerVersion(latest, clientVersion)) {
+        footer?.append(system(`W1 ${clientVersion} is already the latest version.`, "system", true))
+        return
+      }
+      const outcome = await runNpmUpdate()
+      if (outcome.status === "failed") {
+        footer?.append(system(`Update failed: ${outcome.message}`, "error"))
+        return
+      }
+      footer?.append(
+        system(
+          `W1 updated to ${latest ?? "the latest version"}. Restart W1 for it to take effect — your threads are kept.`,
+          "system",
+          true,
+        ),
+      )
+    } finally {
+      updating = false
+    }
+  }
+
   const initialController = await ensureController(activeThreadID)
   lifecycle = await createRuntimeLifecycle({
     directory: input.directory,
@@ -729,8 +768,10 @@ export async function runW1Tui(input: Input) {
     onThreadSelect: switchThread,
     onThreadNew: newThread,
     onThreadArchive: archiveThread,
+    onUpdate: runSelfUpdate,
   })
   footer = lifecycle.footer
+  announceUpdates()
   const removeDisconnectListener = engine.onDisconnect(() => {
     if (closing) return
     footer?.event({ type: "stream.patch", patch: { status: "Reconnecting to W1 Engine…" } })

@@ -101,6 +101,8 @@ type PromptInput = {
   onThreadMenu?: () => void
   onThreadSelect?: FooterThreadSelect
   onThreadNew?: FooterThreadNew
+  /** Runs the self-update. Absent when the surface has no way to update itself. */
+  onUpdate?: () => void | Promise<void>
   onRows: (rows: number) => void
   onStatus: (text: string) => void
   onPasteAttachment?: (text: string) => Promise<RunPromptPaste | undefined>
@@ -455,6 +457,7 @@ export function createPromptState(input: PromptInput): PromptState {
             } satisfies SlashOption,
           ]
         : []),
+      { kind: "slash", name: "update", display: "/update", description: "update W1 to the latest version" } satisfies SlashOption,
       { kind: "slash", name: "exit", display: "/exit", description: "close W1" } satisfies SlashOption,
     ]
     const hidden = new Set(builtins.map((item) => item.name))
@@ -899,7 +902,9 @@ export function createPromptState(input: PromptInput): PromptState {
 
       const cursor = area.cursorOffset
       const head = slashHead(area.plainText)
-      const local = !shell() && (next.name === "new" || next.name === "resume" || next.name === "exit")
+      const local =
+        !shell() &&
+        (next.name === "new" || next.name === "resume" || next.name === "exit" || next.name === "update")
       const separator = !shell() && !local && head && /\s/.test(area.plainText[head.end] ?? "") ? "" : " "
       const text = `/${next.name}${separator}`
 
@@ -1293,6 +1298,17 @@ export function createPromptState(input: PromptInput): PromptState {
 
     const local = input.localThreads && !command && next.mode !== "shell" ? parseLocalThreadCommand(next.text) : undefined
     if (local) {
+      if (local.type === "update") {
+        if (!input.onUpdate) {
+          input.onStatus("update is unavailable on this install")
+          return
+        }
+
+        resetDraft()
+        void input.onUpdate()
+        return
+      }
+
       if (local.type === "resume" && !local.threadID) {
         resetDraft()
         input.onThreadMenu?.()
