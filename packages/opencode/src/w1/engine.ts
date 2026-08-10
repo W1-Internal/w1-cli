@@ -4,6 +4,12 @@ import { homedir, userInfo } from "node:os"
 import path from "node:path"
 import { createConnection, type Socket } from "node:net"
 
+// Claim this surface's engine instance at import time, BEFORE any endpoint is computed — the CLI
+// client and the engine it spawns must derive the same socket path, and the client derives it from
+// this variable. Set on the process itself, not just on the child, which is exactly the mistake
+// that made 0.2.4 unable to reach its own engine.
+process.env.W1_CLIENT_SURFACE ||= "cli"
+
 export const W1_ENGINE_PROTOCOL_VERSION = 1
 export const W1_ENGINE_MAX_FRAME_BYTES = 20 * 1024 * 1024
 const W1_ENGINE_UNSUBSCRIBE_TIMEOUT_MS = 750
@@ -232,16 +238,21 @@ export class EngineClient {
             "--worker-arg",
             "--serve",
           ]
-      // The engine decides its advertised tool surface from W1_SURFACE, and the terminal has no
-      // collaborative browser. Today the CLI is the only surface on this engine, so stamping the
-      // daemon is correct. It stops being correct the moment a second surface shares one daemon:
-      // surface belongs on the turn, not the process. See master list item 130.
+      // Two DIFFERENT variables, and conflating them broke every CLI run in 0.2.4:
+      //
+      //   W1_SURFACE        selects the advertised TOOL SET (the terminal has no browser).
+      //   W1_CLIENT_SURFACE selects which engine INSTANCE — socket and state root — this is.
+      //
+      // W1_SURFACE is stamped only on this child, so it must never influence an endpoint the parent
+      // also has to compute; when it did, the client waited on the shared socket while the engine
+      // bound the per-surface one and the CLI died with `connect ENOENT …/w1-v1.sock`. The instance
+      // key is set on the CLI process itself (see the claim at start-up) and inherited from here.
       const child = spawn(command, args, {
         detached: true,
         stdio: "ignore",
         windowsHide: true,
         shell: false,
-        env: { ...process.env, W1_SURFACE: "cli" },
+        env: { ...process.env, W1_SURFACE: "cli", W1_CLIENT_SURFACE: "cli" },
       })
       child.unref()
       const deadline = Date.now() + (input.timeoutMs ?? 8_000)
