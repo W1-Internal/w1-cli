@@ -232,7 +232,17 @@ export class EngineClient {
             "--worker-arg",
             "--serve",
           ]
-      const child = spawn(command, args, { detached: true, stdio: "ignore", windowsHide: true, shell: false })
+      // The engine decides its advertised tool surface from W1_SURFACE, and the terminal has no
+      // collaborative browser. Today the CLI is the only surface on this engine, so stamping the
+      // daemon is correct. It stops being correct the moment a second surface shares one daemon:
+      // surface belongs on the turn, not the process. See master list item 130.
+      const child = spawn(command, args, {
+        detached: true,
+        stdio: "ignore",
+        windowsHide: true,
+        shell: false,
+        env: { ...process.env, W1_SURFACE: "cli" },
+      })
       child.unref()
       const deadline = Date.now() + (input.timeoutMs ?? 8_000)
       let last: unknown = cause

@@ -64,7 +64,9 @@ function isMusl(platform) {
 }
 
 function packageCandidates(platform, arch) {
-  const base = `w1-cli-${platform}-${arch}`
+  // Scoped: only the @w1-lab org can publish these names, so resolution cannot land on a squatted
+  // package. Ownership is the control here — every check below is satisfiable by whoever owns the name.
+  const base = `@w1-lab/cli-${platform}-${arch}`
   const baseline = arch === "x64" && !supportsAvx2(platform, arch)
   if (platform === "linux") {
     const musl = isMusl(platform)
@@ -92,8 +94,16 @@ function resolveNativePackage() {
       if (manifest.name !== name || manifest.version !== meta.version) continue
       const root = path.dirname(manifestPath)
       const executable = path.join(root, "bin", platform === "windows" ? "w1.exe" : "w1")
-      const runtime = path.join(root, "bin", "w1-runtime", "run-stream.mjs")
+      const runtimeRoot = path.join(root, "bin", "w1-runtime")
+      const runtime = path.join(runtimeRoot, "run-stream.mjs")
+      const engine = path.join(runtimeRoot, "w1-engine.mjs")
+      const buildIdFile = path.join(runtimeRoot, "BUILD_ID")
       if (!fs.existsSync(executable) || !fs.existsSync(runtime)) continue
+      // Fail closed on engine identity. A packaged build must never fall through to a user-writable
+      // ~/.w1/runtime or a source checkout because its own engine bundle is absent or unidentified.
+      if (!fs.existsSync(engine) || !fs.existsSync(buildIdFile)) continue
+      const buildId = fs.readFileSync(buildIdFile, "utf8").trim()
+      if (!buildId || buildId === "source") continue
       return executable
     } catch {
       // Try the next explicitly declared compatible package.
@@ -101,7 +111,7 @@ function resolveNativePackage() {
   }
   throw new Error(
     `The W1 native package for ${platform}/${arch} is missing or incomplete. ` +
-      `Reinstall exactly this release with: npm install --global w1-cli@${meta.version}`,
+      `Reinstall exactly this release with: npm install --global @w1-lab/cli@${meta.version}`,
   )
 }
 

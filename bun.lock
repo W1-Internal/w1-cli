@@ -559,9 +559,9 @@
     },
     "packages/opencode": {
       "name": "opencode",
-      "version": "1.18.15",
+      "version": "0.1.3",
       "bin": {
-        "opencode": "./bin/opencode",
+        "w1": "./bin/w1",
       },
       "dependencies": {
         "@actions/core": "1.11.1",

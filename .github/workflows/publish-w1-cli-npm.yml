@@ -139,11 +139,37 @@ jobs:
           test -s "$win/assets/skills/security/SKILL.md"
           file "$mac/bin/w1" | grep -q 'Mach-O 64-bit arm64 executable'
           file "$win/bin/w1.exe" | grep -Eq 'PE32\+ executable.*x86-64'
+          # Pack once, under a deterministic name, and publish exactly these bytes later. npm derives
+          # its own tarball name from the scoped package name, so rename to the staging directory name
+          # to keep build and publish referring to the same artifact.
           mkdir -p dist/npm-packed
           for package in dist/npm/w1-cli-* dist/npm/w1-cli; do
-            npm pack "$package" --pack-destination dist/npm-packed --json >/dev/null
+            name="$(basename "$package")"
+            packed="$(npm pack "$package" --pack-destination dist/npm-packed --json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s)[0].filename))')"
+            mv "dist/npm-packed/$packed" "dist/npm-packed/$name.tgz"
           done
           sha256sum dist/npm-packed/*.tgz > dist/npm-packed/SHA256SUMS.txt
+
+      - name: Reject unsafe tarball contents
+        working-directory: packages/opencode
+        run: |
+          set -euo pipefail
+          for tarball in dist/npm-packed/*.tgz; do
+            echo "Auditing $tarball"
+            # Symlinks and hardlinks can escape the package root on extraction.
+            if tar -tvzf "$tarball" | grep -Eq '^[lh]'; then
+              echo "Refusing tarball with links: $tarball" >&2; exit 1
+            fi
+            while read -r entry; do
+              case "$entry" in
+                package/bin/*|package/assets/*|package/package.json|package/LICENSE|package/) ;;
+                *) echo "Unexpected file in $tarball: $entry" >&2; exit 1 ;;
+              esac
+            done < <(tar -tzf "$tarball")
+            if tar -tzf "$tarball" | grep -Eq '\.(map|pem|key|p12|pfx)$|(^|/)\.(npmrc|env|netrc|git)|(^|/)id_rsa|(^|/)auth\.json$'; then
+              echo "Refusing tarball with credential or sourcemap content: $tarball" >&2; exit 1
+            fi
+          done
 
       - name: Upload staged npm packages
         uses: actions/upload-artifact@v4
@@ -186,43 +212,50 @@ jobs:
             exit 1
           }
           npm whoami >/dev/null
-          for package in w1-cli-darwin-arm64 w1-cli-darwin-x64 w1-cli-darwin-x64-baseline w1-cli-windows-x64 w1-cli; do
+          for package in @w1-lab/cli-darwin-arm64 @w1-lab/cli-darwin-x64 @w1-lab/cli-darwin-x64-baseline @w1-lab/cli-windows-x64 @w1-lab/cli; do
             if npm view "$package@$VERSION" version >/dev/null 2>&1; then
               echo "Refusing to overwrite existing $package@$VERSION" >&2
               exit 1
             fi
           done
 
-      - name: Restore executable modes lost in artifact transport
+      - name: Verify transported tarballs match the bytes CI packed
         run: |
-          chmod 755 release/npm/w1-cli/bin/w1
-          chmod 755 release/npm/w1-cli-darwin-arm64/bin/w1
-          chmod 755 release/npm/w1-cli-darwin-x64/bin/w1
-          chmod 755 release/npm/w1-cli-darwin-x64-baseline/bin/w1
+          set -euo pipefail
+          cd release/npm-packed
+          sha256sum --check SHA256SUMS.txt
 
       - name: Publish native packages before the meta package
         run: |
-          npm publish release/npm/w1-cli-darwin-arm64 --access public --tag next --provenance
-          npm publish release/npm/w1-cli-darwin-x64 --access public --tag next --provenance
-          npm publish release/npm/w1-cli-darwin-x64-baseline --access public --tag next --provenance
-          npm publish release/npm/w1-cli-windows-x64 --access public --tag next --provenance
-          npm publish release/npm/w1-cli --access public --tag next --provenance
+          set -euo pipefail
+          # Publish the exact verified tarballs. Publishing directories would ship bytes that were
+          # never checksummed, and would depend on executable modes that artifact transport drops.
+          npm publish release/npm-packed/w1-cli-darwin-arm64.tgz --access public --tag next --provenance
+          npm publish release/npm-packed/w1-cli-darwin-x64.tgz --access public --tag next --provenance
+          npm publish release/npm-packed/w1-cli-darwin-x64-baseline.tgz --access public --tag next --provenance
+          npm publish release/npm-packed/w1-cli-windows-x64.tgz --access public --tag next --provenance
+          npm publish release/npm-packed/w1-cli.tgz --access public --tag next --provenance
 
       - name: Verify registry contents before promotion
         env:
           VERSION: ${{ inputs.version }}
         run: |
-          for package in w1-cli-darwin-arm64 w1-cli-darwin-x64 w1-cli-darwin-x64-baseline w1-cli-windows-x64 w1-cli; do
+          set -euo pipefail
+          for package in @w1-lab/cli-darwin-arm64 @w1-lab/cli-darwin-x64 @w1-lab/cli-darwin-x64-baseline @w1-lab/cli-windows-x64 @w1-lab/cli; do
             test "$(npm view "$package@$VERSION" version)" = "$VERSION"
           done
+          # The published meta package must only depend on names inside the owned scope.
+          npm view "@w1-lab/cli@$VERSION" optionalDependencies --json \
+            | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const o=JSON.parse(s||"{}");const bad=Object.keys(o).filter(n=>!n.startsWith("@w1-lab/"));if(bad.length){console.error("Unscoped dependency published: "+bad.join(", "));process.exit(1)}})'
 
       - name: Promote the verified release to latest
         env:
           VERSION: ${{ inputs.version }}
         run: |
-          npm dist-tag add w1-cli-darwin-arm64@"$VERSION" latest
-          npm dist-tag add w1-cli-darwin-x64@"$VERSION" latest
-          npm dist-tag add w1-cli-darwin-x64-baseline@"$VERSION" latest
-          npm dist-tag add w1-cli-windows-x64@"$VERSION" latest
-          npm dist-tag add w1-cli@"$VERSION" latest
-          test "$(npm view w1-cli dist-tags.latest)" = "$VERSION"
+          set -euo pipefail
+          npm dist-tag add @w1-lab/cli-darwin-arm64@"$VERSION" latest
+          npm dist-tag add @w1-lab/cli-darwin-x64@"$VERSION" latest
+          npm dist-tag add @w1-lab/cli-darwin-x64-baseline@"$VERSION" latest
+          npm dist-tag add @w1-lab/cli-windows-x64@"$VERSION" latest
+          npm dist-tag add @w1-lab/cli@"$VERSION" latest
+          test "$(npm view @w1-lab/cli dist-tags.latest)" = "$VERSION"
