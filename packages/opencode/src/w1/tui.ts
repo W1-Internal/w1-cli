@@ -23,6 +23,9 @@ import {
   assertAttachmentBytes,
   interactionWasDelivered,
   isAmbiguousEngineFailure,
+  readW1Wake,
+  w1WakeDelayMs,
+  type W1Wake,
 } from "./tui-contract"
 
 type Input = {
@@ -43,7 +46,14 @@ type PendingSubmit = {
   text: string
   threadId: string
   attachmentIds?: string[]
-  workerRequest: { runtimeMode: string; first: boolean; model?: string }
+  workerRequest: {
+    runtimeMode: string
+    first: boolean
+    model?: string
+    /** Set only by the waker. The engine reads this INSTEAD of `text`, so a resume never enters
+     *  the transcript as something the user typed. */
+    systemContinuation?: string
+  }
 }
 type Controller = {
   id: string
@@ -62,6 +72,8 @@ type Controller = {
   result?: Record<string, unknown>
   pending?: PendingInteraction
   pendingSubmit?: PendingSubmit
+  /** A wake this thread is subscribed to, and the timer that will resume it. */
+  wake?: { jobId: string; label: string; timer: ReturnType<typeof setTimeout> }
   tools: Map<string, ToolTab>
   tabs: FooterSubagentState
   subscription?: { close(): Promise<void> }
@@ -426,7 +438,63 @@ export async function runW1Tui(input: Input) {
     if (tag === "RESULT") controller.result = payload
   }
 
+  const clearWake = (controller: Controller) => {
+    if (controller.wake) clearTimeout(controller.wake.timer)
+    controller.wake = undefined
+  }
+
+  /** Resume this thread when its wake is due.
+   *
+   * The engine owns the job and the schedule; this timer only decides WHEN to ask. A re-check
+   * that finds the job still running costs no model call and hands back a fresh `nextCheckAt`,
+   * which re-arms this timer through `finishTurn` — so one wait is one timer, never a poll loop. */
+  const armWake = (controller: Controller, wait: W1Wake) => {
+    clearWake(controller)
+    const timer = setTimeout(() => {
+      const current = controllers.get(controller.id)
+      if (!current || current.wake?.jobId !== wait.jobId) return
+      current.wake = undefined
+      // A live turn already carries the wait on its own path and will re-arm this timer when it
+      // ends; waking on top of it would double-drive the thread.
+      if (current.state === "running" || current.state === "awaiting_user") return
+      current.turnStarted = Date.now()
+      current.state = "running"
+      current.sawSay = false
+      current.narration = ""
+      void submitTurn(current, {
+        clientRequestId: randomUUID(),
+        workspacePath: input.directory,
+        // Not a user message: the engine reads `systemContinuation` and never puts this text in
+        // the transcript. Resubmitting the user's own words here is what produced nine identical
+        // turns on the desktop.
+        text: `Resuming: ${wait.label}.`,
+        threadId: current.id,
+        workerRequest: {
+          runtimeMode: input.fullAccess ? "full-access" : "approval-required",
+          first: false,
+          ...(input.model ? { model: input.model } : {}),
+          systemContinuation:
+            `Durable wait wake for ${wait.label} (${wait.jobId}). ` +
+            "Check the existing scheduled job exactly once. Do not launch the original side effect again.",
+        },
+      }).catch((cause) => {
+        current.state = "idle"
+        // The wait is durable in the engine either way; re-arm so a transient failure is not
+        // the end of it, and say so rather than going quiet.
+        armWake(current, { ...wait, nextCheckAt: new Date(Date.now() + 30_000).toISOString() })
+        if (isVisible(current)) {
+          footer?.append(system(`W1 could not resume ${wait.label}: ${cause instanceof Error ? cause.message : String(cause)}. Retrying shortly.`, "error"))
+        }
+      })
+    }, w1WakeDelayMs(wait, Date.now()))
+    timer.unref?.()
+    controller.wake = { jobId: wait.jobId, label: wait.label, timer }
+  }
+
   const finishTurn = (controller: Controller, payload: Record<string, unknown>) => {
+    // Read the wake BEFORE the last result is overwritten: the durable turn.completed payload
+    // and the live RESULT frame are two views of the same turn and either may carry it.
+    const wake = readW1Wake(payload.awaitingJob) ?? readW1Wake(record(controller.result).awaitingJob)
     controller.result = payload
     finishAssistant(controller)
     controller.state = payload.error || String(payload.status ?? "").includes("error") ? "failed" : "idle"
@@ -444,6 +512,14 @@ export async function runW1Tui(input: Input) {
     controller.pending = undefined
     controller.pendingSubmit = undefined
     controller.narration = ""
+    // THE CLI WAKES ITSELF. Until now nothing here watched a wait at all: Kai's 2-minute wake
+    // ended its turn in 7s and sat silent for 13 minutes until he typed again — and the model,
+    // seeing a job that had genuinely completed, then reported "returned after the full 2-minute
+    // wait ✅". A confident lie, because the timer was right and only the waking was missing.
+    // A failed turn keeps its wait armed: the engine still holds the subscription, and dropping
+    // the timer here would strand it until the user happened to type.
+    if (wake) armWake(controller, wake)
+    else if (controller.state !== "failed") clearWake(controller)
   }
 
   const onDurable = async (controller: Controller, event: EngineEvent) => {
@@ -627,6 +703,8 @@ export async function runW1Tui(input: Input) {
       threadId: id,
       archived,
     })
+    const controller = controllers.get(id)
+    if (controller && archived) clearWake(controller)
     updateSummary({ ...summary, archived, updatedAt: new Date().toISOString() })
     return true
   }
@@ -762,6 +840,8 @@ export async function runW1Tui(input: Input) {
       const controller = active()
       if (!controller) return
       finishAssistant(controller, true)
+      // Stop means stop. A wake left armed here would restart the thread the user just stopped.
+      clearWake(controller)
       void engine.request("turn.stop", { threadId: controller.id })
     },
     onThreadCatalogRequest: publishThreads,
@@ -891,6 +971,8 @@ export async function runW1Tui(input: Input) {
     closing = true
     removeDisconnectListener()
     if (elapsedTimer) clearInterval(elapsedTimer)
+    // The engine keeps the wait; this process must not hold a timer that outlives its own TUI.
+    for (const controller of controllers.values()) clearWake(controller)
     const running = summaries.filter((item) => item.state === "running" || item.state === "awaiting_user").length
     const unsubscribe = Promise.allSettled([
       ...(catalogSubscription ? [catalogSubscription.close()] : []),
