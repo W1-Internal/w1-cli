@@ -1,8 +1,8 @@
-import { spawn } from "node:child_process"
-import { createHash, randomUUID } from "node:crypto"
-import { homedir, userInfo } from "node:os"
+import { randomUUID } from "node:crypto"
+import { closeSync, openSync, readFileSync, rmSync, writeSync, mkdirSync } from "node:fs"
+import { homedir } from "node:os"
 import path from "node:path"
-import { createConnection, type Socket } from "node:net"
+import { pathToFileURL } from "node:url"
 
 // Claim this surface's engine instance at import time, BEFORE any endpoint is computed — the CLI
 // client and the engine it spawns must derive the same socket path, and the client derives it from
@@ -22,20 +22,6 @@ export function assertEngineFrameBytes(byteLength: number) {
 
 export function engineClientVersion(value: string) {
   return /^v?\d+\.\d+\.\d+(?:[-+].*)?$/.test(value.trim()) ? value.trim() : "0.0.0"
-}
-
-function compareVersions(leftValue: string, rightValue: string): -1 | 0 | 1 | undefined {
-  const parse = (value: string) => {
-    const match = /^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(value.trim())
-    return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : undefined
-  }
-  const left = parse(leftValue)
-  const right = parse(rightValue)
-  if (!left || !right) return
-  for (let index = 0; index < 3; index++) {
-    if (left[index] !== right[index]) return left[index]! > right[index]! ? 1 : -1
-  }
-  return 0
 }
 
 export type EngineEvent = {
@@ -123,10 +109,6 @@ export function selectedMessagesAfterSnapshot(messages: ThreadPush[], snapshotSe
   )
 }
 
-type RpcResponse =
-  | { id: string; ok: true; result: unknown }
-  | { id: string; ok: false; error: { code: string; message: string; retryable: boolean; structural?: Record<string, unknown> } }
-
 /** Mirrors the engine's normalizeSurface (src/engine/state.ts). Both sides must slug identically. */
 const W1_LEGACY_SHARED_SURFACE = "shared"
 
@@ -140,37 +122,21 @@ export function normalizeEngineSurface(raw: string | undefined) {
 }
 
 /**
- * Where this CLI's engine listens.
- *
- * This function is one half of a contract whose other half lives in a different repository
- * (`resolveW1EngineEndpoint` in the harness). It ignored the surface entirely while the engine it
- * spawns honours `W1_CLIENT_SURFACE`, so the client waited on `~/.w1/engine/v1/ipc/w1-v1.sock`
- * while the engine bound `~/.w1/engine/surfaces/cli/v1/ipc/w1-v1.sock` and every run died with
- * `connect ENOENT`. That is 0.2.4 and 0.2.5, broken for every user on a clean machine — including
- * the ones "fixed" by setting W1_CLIENT_SURFACE on this process, because nothing here ever read it.
- *
- * Verified by running both sides, not by reading either: see the endpoint-parity test.
+ * ENGINE ZERO: this CLI HOSTS its engine — there is no endpoint, no daemon, no other side of a
+ * cross-repository contract to drift from. What remains is the STATE ROOT: the same per-surface
+ * directory the daemon era used, so threads survive the cutover byte for byte. The whole 0.2.4
+ * class of bug (client and engine deriving different endpoints) is unrepresentable now; both
+ * halves are one process.
  */
-export function resolveEndpoint() {
-  const surface = normalizeEngineSurface(process.env.W1_CLIENT_SURFACE)
-  if (process.platform === "win32") {
-    // Named pipes are one flat global namespace, so the surface has to live in the NAME — there is
-    // no directory to isolate it with, unlike the unix path below.
-    const owner = createHash("sha256").update(`${userInfo().username}\0${homedir()}`).digest("hex").slice(0, 16)
-    const suffix = surface === W1_LEGACY_SHARED_SURFACE ? "" : `-${surface}`
-    return `\\\\.\\pipe\\w1-${owner}${suffix}-v${W1_ENGINE_PROTOCOL_VERSION}`
-  }
+export function resolveStateRoot() {
   const configured = process.env.W1_ENGINE_STATE_DIR?.trim()
-  if (configured) {
-    return path.join(path.resolve(configured), "ipc", `w1-v${W1_ENGINE_PROTOCOL_VERSION}.sock`)
-  }
+  if (configured) return path.resolve(configured)
+  const surface = normalizeEngineSurface(process.env.W1_CLIENT_SURFACE)
   // Surface roots are SIBLINGS of the shared root, never children of it — nesting them makes the
   // history seed a self-copy, which fails and leaves the surface with an empty journal.
-  const root =
-    surface === W1_LEGACY_SHARED_SURFACE
-      ? path.join(homedir(), ".w1", "engine", `v${W1_ENGINE_PROTOCOL_VERSION}`)
-      : path.join(homedir(), ".w1", "engine", "surfaces", surface, `v${W1_ENGINE_PROTOCOL_VERSION}`)
-  return path.join(root, "ipc", `w1-v${W1_ENGINE_PROTOCOL_VERSION}.sock`)
+  return surface === W1_LEGACY_SHARED_SURFACE
+    ? path.join(homedir(), ".w1", "engine", `v${W1_ENGINE_PROTOCOL_VERSION}`)
+    : path.join(homedir(), ".w1", "engine", "surfaces", surface, `v${W1_ENGINE_PROTOCOL_VERSION}`)
 }
 
 async function readBuildId(folder: string) {
@@ -210,28 +176,81 @@ export async function resolveEngine(): Promise<EngineLocation | undefined> {
   }
 }
 
-function canAutostart(cause: unknown) {
-  const code = cause && typeof cause === "object" && "code" in cause ? String(cause.code) : ""
-  return code === "ENOENT" || code === "ECONNREFUSED"
+/**
+ * One in-process host per state root. Two concurrent `w1` invocations used to multiplex through
+ * the daemon; now the second gets ONE honest line and an escape hatch instead of a corrupted
+ * journal. A lock whose recorded pid is dead is litter and is reclaimed silently.
+ */
+function acquireHostLock(stateRoot: string): () => void {
+  mkdirSync(stateRoot, { recursive: true })
+  const lockPath = path.join(stateRoot, "host.lock")
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      const fd = openSync(lockPath, "wx")
+      writeSync(fd, JSON.stringify({ pid: process.pid }))
+      closeSync(fd)
+      const release = () => {
+        try {
+          rmSync(lockPath, { force: true })
+        } catch {}
+      }
+      process.once("exit", release)
+      return release
+    } catch {
+      let pid = 0
+      try {
+        pid = Number((JSON.parse(readFileSync(lockPath, "utf8")) as { pid?: number }).pid ?? 0)
+      } catch {}
+      let alive = false
+      if (pid === process.pid) {
+        // Our own pid means a second host in THIS process — still two hosts on one journal.
+        alive = true
+      } else if (pid > 1) {
+        try {
+          process.kill(pid, 0)
+          alive = true
+        } catch {
+          alive = false
+        }
+      }
+      if (alive) {
+        throw new Error(
+          `Another W1 is already running this workspace's engine (pid ${pid}). Close it first, or run this one against its own state with W1_ENGINE_STATE_DIR.`,
+        )
+      }
+      try {
+        rmSync(lockPath, { force: true })
+      } catch {}
+    }
+  }
+  throw new Error("Could not claim the W1 engine state root — a lock keeps reappearing.")
+}
+
+type InProcessEngineModule = {
+  createInProcessW1Engine(options: Record<string, unknown>): Promise<{
+    attach(): {
+      request(method: string, params?: unknown): Promise<unknown>
+      onMessage(listener: (message: Record<string, unknown>) => void): () => void
+      detach(): void
+    }
+    close(): Promise<void>
+  }>
 }
 
 export class EngineClient {
-  private socket?: Socket
-  private buffer = ""
-  private readonly pending = new Map<string, {
-    resolve(value: unknown): void
-    reject(cause: Error): void
-    timer: ReturnType<typeof setTimeout>
-  }>()
+  private host?: Awaited<ReturnType<InProcessEngineModule["createInProcessW1Engine"]>>
+  private peer?: ReturnType<Awaited<ReturnType<InProcessEngineModule["createInProcessW1Engine"]>>["attach"]>
+  private releaseLock?: () => void
+  private opening?: Promise<void>
   private readonly subscriptions = new Map<string, Subscription>()
   private readonly workspaceSubscriptions = new Map<string, WorkspaceSubscription>()
   private readonly orphanMessages = new Map<string, EnginePush[]>()
   private readonly disconnectListeners = new Set<() => void>()
 
-  constructor(readonly endpoint = resolveEndpoint()) {}
+  constructor(readonly stateRoot = resolveStateRoot()) {}
 
   get connected() {
-    return this.socket?.writable === true && !this.socket.destroyed
+    return this.peer !== undefined
   }
 
   onDisconnect(listener: () => void) {
@@ -239,105 +258,48 @@ export class EngineClient {
     return () => this.disconnectListeners.delete(listener)
   }
 
+  /**
+   * ENGINE ZERO: hosting, not dialing. The engine library ships BESIDE the worker bundle this
+   * CLI already carries, so the engine and this client are the same build by construction —
+   * every handshake, version-comparison, build-identity and replacement branch the daemon era
+   * needed is gone because the question can no longer arise. Workers spawn as this process's
+   * direct children (through our own binary's __runtime entry when compiled) and die with us.
+   */
   async connect(input: { location: EngineLocation; clientVersion: string; timeoutMs?: number }): Promise<void> {
     if (this.connected) return
-    try {
-      await this.open(Math.min(input.timeoutMs ?? 2_000, 2_000))
-    } catch (cause) {
-      if (!canAutostart(cause)) throw cause
-      const compiled = typeof W1_CLI_COMPILED !== "undefined" && W1_CLI_COMPILED
-      const command = process.execPath
-      const args = compiled
-        ? [
-            "__engine",
-            input.location.enginePath,
-            "--engine-version",
-            input.clientVersion,
-            "--worker-command",
-            process.execPath,
-            "--worker-arg",
-            "__runtime",
-            "--worker-arg",
-            input.location.workerPath,
-          ]
-        : [
-            input.location.enginePath,
-            "--engine-version",
-            input.clientVersion,
-            "--worker-command",
-            process.execPath,
-            "--worker-arg",
-            input.location.workerPath,
-            "--worker-arg",
-            "--serve",
-          ]
-      // Two DIFFERENT variables, and conflating them broke every CLI run in 0.2.4:
-      //
-      //   W1_SURFACE        selects the advertised TOOL SET (the terminal has no browser).
-      //   W1_CLIENT_SURFACE selects which engine INSTANCE — socket and state root — this is.
-      //
-      // W1_SURFACE is stamped only on this child, so it must never influence an endpoint the parent
-      // also has to compute; when it did, the client waited on the shared socket while the engine
-      // bound the per-surface one and the CLI died with `connect ENOENT …/w1-v1.sock`. The instance
-      // key is set on the CLI process itself (see the claim at start-up) and inherited from here.
-      const child = spawn(command, args, {
-        detached: true,
-        stdio: "ignore",
-        windowsHide: true,
-        shell: false,
-        env: { ...process.env, W1_SURFACE: "cli", W1_CLIENT_SURFACE: "cli" },
-      })
-      child.unref()
-      const deadline = Date.now() + (input.timeoutMs ?? 8_000)
-      let last: unknown = cause
-      while (Date.now() < deadline && !this.socket) {
-        try {
-          await this.open(500)
-        } catch (next) {
-          last = next
-          await Bun.sleep(100)
-        }
+    this.opening ??= (async () => {
+      const libPath = path.join(path.dirname(input.location.enginePath), "w1-engine-lib.mjs")
+      if (!(await Bun.file(libPath).exists())) {
+        throw new Error(
+          "This W1 install is missing its engine library (w1-engine-lib.mjs) — reinstall with: npm install -g @w1-lab/cli@latest",
+        )
       }
-      if (!this.socket) throw new Error(`W1 Engine did not start: ${last instanceof Error ? last.message : String(last)}`)
-    }
-    const handshake = await this.request("protocol.handshake", {
-      surface: "cli",
-      clientVersion: input.clientVersion,
-      platform: process.platform,
-      channel: "release",
-    }) as { protocolVersion?: number; engineVersion?: string; buildId?: string; minimumClientVersion?: string }
-    if (handshake.protocolVersion !== W1_ENGINE_PROTOCOL_VERSION) {
-      this.close()
-      throw new Error("The W1 CLI and Engine protocol versions are incompatible.")
-    }
-    const runningVersion = String(handshake.engineVersion ?? "0.0.0")
-    const comparison = compareVersions(runningVersion, input.clientVersion)
-    if (comparison === undefined) {
-      this.close()
-      throw new Error("The running W1 Engine returned an invalid version handshake.")
-    }
-    if (comparison === 0 && handshake.buildId !== input.location.buildId) {
-      this.close()
-      throw new Error(`The running W1 Engine has the same version but another build identity (expected ${input.location.buildId}, got ${handshake.buildId ?? "unknown"}).`)
-    }
-    if (comparison < 0) {
-      const replacement = await this.request("engine.shutdown", {
-        expectedEngineVersion: runningVersion,
-        expectedBuildId: String(handshake.buildId ?? ""),
-        replacementEngineVersion: input.clientVersion,
-        replacementBuildId: input.location.buildId,
-      }) as { accepted?: boolean; reason?: string; status?: EngineStatus }
-      if (!replacement.accepted) {
-        this.close()
-        const active = replacement.status?.activeTurnCount ?? 0
-        throw new Error(replacement.reason === "active_turns"
-          ? `The older W1 Engine is still running ${active} task${active === 1 ? "" : "s"}; it will upgrade when those tasks finish.`
-          : `The running W1 Engine refused replacement (${replacement.reason ?? "unknown reason"}).`)
+      const release = acquireHostLock(this.stateRoot)
+      try {
+        const mod = (await import(pathToFileURL(libPath).href)) as InProcessEngineModule
+        const compiled = typeof W1_CLI_COMPILED !== "undefined" && W1_CLI_COMPILED
+        const host = await mod.createInProcessW1Engine({
+          stateRoot: this.stateRoot,
+          engineVersion: input.clientVersion,
+          buildId: input.location.buildId,
+          clientSurface: "cli",
+          workerCommand: process.execPath,
+          workerArgs: compiled
+            ? ["__runtime", input.location.workerPath]
+            : [input.location.workerPath, "--serve"],
+        })
+        this.host = host
+        this.peer = host.attach()
+        this.releaseLock = release
+        this.peer.onMessage((message) => this.route(message))
+      } catch (cause) {
+        release()
+        throw cause
       }
-      this.close()
-      await Bun.sleep(75)
-      return this.connect(input)
-    }
+    })().finally(() => {
+      this.opening = undefined
+    })
+    return this.opening
   }
 
   async reconnect(input: { location: EngineLocation; clientVersion: string; attempts?: number; delayMs?: number }) {
@@ -358,116 +320,48 @@ export class EngineClient {
     throw failure instanceof Error ? failure : new Error(String(failure ?? "W1 Engine reconnect failed."))
   }
 
-  private open(timeoutMs: number) {
-    return new Promise<void>((resolve, reject) => {
-      const socket = createConnection(this.endpoint)
-      const timer = setTimeout(() => {
-        socket.destroy()
-        const error = Object.assign(new Error("engine connection timeout"), { code: "ETIMEDOUT" })
-        reject(error)
-      }, timeoutMs)
-      socket.once("connect", () => {
-        clearTimeout(timer)
-        this.socket = socket
-        this.bind(socket)
-        resolve()
-      })
-      socket.once("error", (cause) => {
-        clearTimeout(timer)
-        socket.destroy()
-        reject(cause)
-      })
-    })
+  /** Pushes from the in-process engine — same shapes, same order the socket wire carried. */
+  private route(message: Record<string, unknown>) {
+    if (message.type !== "event" && message.type !== "transient" && message.type !== "catalog") return
+    const push = message as EnginePush
+    if (push.type === "catalog") {
+      const subscription = this.workspaceSubscriptions.get(push.subscriptionId)
+      if (!subscription) {
+        const buffered = this.orphanMessages.get(push.subscriptionId) ?? []
+        buffered.push(push)
+        this.orphanMessages.set(push.subscriptionId, buffered)
+        return
+      }
+      if (!Number.isInteger(push.cursor) || push.cursor <= subscription.cursor) return
+      subscription.cursor = push.cursor
+      subscription.listener(push)
+      return
+    }
+    const subscription = this.subscriptions.get(push.subscriptionId)
+    if (!subscription) {
+      const buffered = this.orphanMessages.get(push.subscriptionId) ?? []
+      buffered.push(push)
+      this.orphanMessages.set(push.subscriptionId, buffered)
+      return
+    }
+    if (push.type === "event") {
+      if (push.event.sequence <= subscription.cursor) return
+      subscription.cursor = push.event.sequence
+    }
+    subscription.listener(push)
   }
 
-  private bind(socket: Socket) {
-    socket.setEncoding("utf8")
-    socket.on("data", (chunk) => {
-      this.buffer += String(chunk)
-      for (;;) {
-        const boundary = this.buffer.indexOf("\n")
-        if (boundary < 0) break
-        const line = this.buffer.slice(0, boundary)
-        this.buffer = this.buffer.slice(boundary + 1)
-        let message: Record<string, unknown>
-        try {
-          message = JSON.parse(line)
-        } catch {
-          continue
-        }
-        if (message.type === "event" || message.type === "transient" || message.type === "catalog") {
-          const push = message as EnginePush
-          if (push.type === "catalog") {
-            const subscription = this.workspaceSubscriptions.get(push.subscriptionId)
-            if (!subscription) {
-              const buffered = this.orphanMessages.get(push.subscriptionId) ?? []
-              buffered.push(push)
-              this.orphanMessages.set(push.subscriptionId, buffered)
-              continue
-            }
-            if (!Number.isInteger(push.cursor) || push.cursor <= subscription.cursor) continue
-            subscription.cursor = push.cursor
-            subscription.listener(push)
-            continue
-          }
-          const subscription = this.subscriptions.get(push.subscriptionId)
-          if (!subscription) {
-            const buffered = this.orphanMessages.get(push.subscriptionId) ?? []
-            buffered.push(push)
-            this.orphanMessages.set(push.subscriptionId, buffered)
-            continue
-          }
-          if (subscription && push.type === "event") {
-            if (push.event.sequence <= subscription.cursor) continue
-            subscription.cursor = push.event.sequence
-          }
-          subscription?.listener(push)
-          continue
-        }
-        const response = message as RpcResponse
-        const pending = this.pending.get(response.id)
-        if (!pending) continue
-        this.pending.delete(response.id)
-        clearTimeout(pending.timer)
-        if (response.ok) pending.resolve(response.result)
-        else pending.reject(Object.assign(new Error(response.error.message), response.error))
-      }
-    })
-    socket.on("close", () => {
-      const current = this.socket === socket
-      if (current) this.socket = undefined
-      this.buffer = ""
-      for (const pending of this.pending.values()) {
-        clearTimeout(pending.timer)
-        pending.reject(new Error("W1 Engine disconnected."))
-      }
-      this.pending.clear()
-      this.subscriptions.clear()
-      this.workspaceSubscriptions.clear()
-      this.orphanMessages.clear()
-      if (current) {
-        for (const listener of this.disconnectListeners) listener()
-      }
-    })
-  }
-
-  request(method: string, params: unknown, timeoutMs = 15_000) {
-    if (!this.socket?.writable) return Promise.reject(new Error("W1 Engine is not connected."))
-    const id = randomUUID()
-    const frame = `${JSON.stringify({ id, protocolVersion: W1_ENGINE_PROTOCOL_VERSION, method, params })}\n`
+  request(method: string, params: unknown, _timeoutMs = 15_000) {
+    const peer = this.peer
+    if (!peer) return Promise.reject(new Error("W1 Engine is not connected."))
+    // The 20 MiB bound survives the daemon: it was always the product's attachment/turn budget,
+    // not a transport accident, and keeping it means no payload behaves differently in-process.
     try {
-      assertEngineFrameBytes(Buffer.byteLength(frame))
+      assertEngineFrameBytes(Buffer.byteLength(JSON.stringify({ id: randomUUID(), method, params })))
     } catch (cause) {
       return Promise.reject(cause)
     }
-    return new Promise<unknown>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id)
-        reject(new Error(`W1 Engine request timed out: ${method}`))
-      }, timeoutMs)
-      this.pending.set(id, { resolve, reject, timer })
-      this.socket!.write(frame)
-    })
+    return peer.request(method, params)
   }
 
   async subscribeThread(input: { threadId: string; afterSequence: number; workspacePath?: string }, listener: (message: ThreadPush) => void) {
@@ -533,8 +427,19 @@ export class EngineClient {
   }
 
   close() {
-    this.socket?.destroy()
-    this.socket = undefined
-    this.buffer = ""
+    const hadPeer = this.peer !== undefined
+    this.peer?.detach()
+    this.peer = undefined
+    const host = this.host
+    this.host = undefined
+    if (host) void host.close()
+    this.releaseLock?.()
+    this.releaseLock = undefined
+    this.subscriptions.clear()
+    this.workspaceSubscriptions.clear()
+    this.orphanMessages.clear()
+    if (hadPeer) {
+      for (const listener of this.disconnectListeners) listener()
+    }
   }
 }

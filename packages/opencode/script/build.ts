@@ -44,6 +44,12 @@ if (!(await Bun.file(w1RuntimeEntrypoint).exists())) {
 if (!(await Bun.file(w1EngineEntrypoint).exists())) {
   throw new Error(`W1 Engine bundle is missing: ${w1EngineEntrypoint}`)
 }
+// ENGINE ZERO: the CLI hosts its engine by importing this library. A harness bundle without it
+// is a pre-Engine-Zero build and must fail HERE, not on the first user's first run.
+const w1EngineLibEntrypoint = path.join(w1RuntimeRoot, "w1-engine-lib.mjs")
+if (!(await Bun.file(w1EngineLibEntrypoint).exists())) {
+  throw new Error(`W1 Engine library bundle is missing: ${w1EngineLibEntrypoint}`)
+}
 if (!(await Bun.file(w1EngineBuildFile).exists())) {
   throw new Error(`W1 Engine build stamp is missing: ${w1EngineBuildFile}`)
 }

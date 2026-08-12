@@ -34,6 +34,7 @@ async function nativeFixture(
   await Bun.write(path.join(target, "bin", windows ? "w1.exe" : "w1"), "fixture")
   if (runtime) await Bun.write(path.join(target, "bin", "w1-runtime", "run-stream.mjs"), "fixture runtime")
   if (engine) await Bun.write(path.join(target, "bin", "w1-runtime", "w1-engine.mjs"), "fixture engine")
+  if (engine) await Bun.write(path.join(target, "bin", "w1-runtime", "w1-engine-lib.mjs"), "fixture engine lib")
   if (buildId !== false) await Bun.write(path.join(target, "bin", "w1-runtime", "BUILD_ID"), `${buildId}\n`)
   return target
 }
@@ -191,6 +192,7 @@ describe("W1 npm package contract", () => {
       await Bun.write(path.join(nativeRoot, "bin", "w1-runtime", "run-stream.mjs"), "fixture runtime")
       // Engine bundle present, but BUILD_ID says this is an unpublished source runtime.
       await Bun.write(path.join(nativeRoot, "bin", "w1-runtime", "w1-engine.mjs"), "fixture engine")
+    await Bun.write(path.join(nativeRoot, "bin", "w1-runtime", "w1-engine-lib.mjs"), "fixture engine lib")
       await Bun.write(path.join(nativeRoot, "bin", "w1-runtime", "BUILD_ID"), "source\n")
       const executable = path.join(nativeRoot, "bin", "w1")
       await Bun.write(executable, '#!/bin/sh\nprintf "native:%s" "$1"\n')
@@ -213,6 +215,7 @@ describe("W1 npm package contract", () => {
     await Bun.write(path.join(nativeRoot, "package.json"), JSON.stringify({ name, version: "0.2.0" }))
     await Bun.write(path.join(nativeRoot, "bin", "w1-runtime", "run-stream.mjs"), "fixture runtime")
     await Bun.write(path.join(nativeRoot, "bin", "w1-runtime", "w1-engine.mjs"), "fixture engine")
+    await Bun.write(path.join(nativeRoot, "bin", "w1-runtime", "w1-engine-lib.mjs"), "fixture engine lib")
     await Bun.write(path.join(nativeRoot, "bin", "w1-runtime", "BUILD_ID"), "engine-build\n")
     const executable = path.join(nativeRoot, "bin", "w1")
     await Bun.write(executable, '#!/bin/sh\nprintf "native:%s" "$1"\n')

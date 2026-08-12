@@ -85,12 +85,16 @@ export async function stageW1NpmPackages(options: Options) {
     const executable = path.join(source, "bin", name.includes("-windows-") ? "w1.exe" : "w1")
     const runtime = path.join(source, "bin", "w1-runtime", "run-stream.mjs")
     const engine = path.join(source, "bin", "w1-runtime", "w1-engine.mjs")
+    const engineLib = path.join(source, "bin", "w1-runtime", "w1-engine-lib.mjs")
     const buildIdFile = path.join(source, "bin", "w1-runtime", "BUILD_ID")
     if (!(await regularFile(executable))) throw new Error(`${name} is missing its native W1 executable`)
     if (!(await regularFile(runtime))) throw new Error(`${name} is missing bin/w1-runtime/run-stream.mjs`)
     // A published build must carry an identified engine. Without these the launcher would start a
     // binary that can only resolve an engine from a user-writable path or a source checkout.
     if (!(await regularFile(engine))) throw new Error(`${name} is missing bin/w1-runtime/w1-engine.mjs`)
+    // ENGINE ZERO: the CLI HOSTS its engine by importing this library — without it every run
+    // dies on connect with a reinstall message, so its absence must fail the publish, not the user.
+    if (!(await regularFile(engineLib))) throw new Error(`${name} is missing bin/w1-runtime/w1-engine-lib.mjs`)
     if (!(await regularFile(buildIdFile))) throw new Error(`${name} is missing bin/w1-runtime/BUILD_ID`)
     const buildId = (await readFile(buildIdFile, "utf8")).trim()
     if (!buildId || buildId === "source" || buildId.endsWith("-dirty")) {
