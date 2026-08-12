@@ -81,38 +81,123 @@ function packageCandidates(platform, arch) {
   return [base]
 }
 
+function usableExecutable(name, platform) {
+  if ((meta.optionalDependencies || {})[name] !== meta.version) return null
+  try {
+    const manifestPath = requireFromHere.resolve(`${name}/package.json`)
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"))
+    if (manifest.name !== name || manifest.version !== meta.version) return null
+    const root = path.dirname(manifestPath)
+    const executable = path.join(root, "bin", platform === "windows" ? "w1.exe" : "w1")
+    const runtimeRoot = path.join(root, "bin", "w1-runtime")
+    if (!fs.existsSync(executable) || !fs.existsSync(path.join(runtimeRoot, "run-stream.mjs"))) return null
+    // Fail closed on engine identity. A packaged build must never fall through to a user-writable
+    // ~/.w1/runtime or a source checkout because its own engine bundle is absent or unidentified.
+    const buildIdFile = path.join(runtimeRoot, "BUILD_ID")
+    if (!fs.existsSync(path.join(runtimeRoot, "w1-engine.mjs")) || !fs.existsSync(buildIdFile)) return null
+    const buildId = fs.readFileSync(buildIdFile, "utf8").trim()
+    if (!buildId || buildId === "source") return null
+    return executable
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Install the native package this machine needs, right now, without asking.
+ *
+ * npm does not reliably add a NEWLY PUBLISHED optional dependency to an existing global install —
+ * `npm i -g @w1-lab/cli@latest` reports "changed 2 packages" and silently leaves the new one out.
+ * That is exactly what happened the day `cli-windows-x64-baseline` first shipped: the package was
+ * published and complete, the machine that needed it never received it, and W1 answered with an
+ * error telling the user to run the same command that had just failed them.
+ *
+ * A tool that knows precisely which package it is missing, and the exact version, has no business
+ * making a person fix that by hand. It repairs itself and carries on. Bounded by design: one
+ * attempt, guarded by W1_NPM_REPAIRED so a repaired process can never re-enter, and only ever
+ * installing a scoped @w1-lab name pinned to this launcher's own version — it can neither loop nor
+ * be talked into fetching something else.
+ */
+function repairNativePackage(candidates, platform) {
+  if (process.env.W1_NPM_REPAIRED === "1") return null
+  const wanted = candidates.find((name) => (meta.optionalDependencies || {})[name] === meta.version)
+  if (!wanted) return null
+  const spec = `${wanted}@${meta.version}`
+  process.stderr.write(`W1 is repairing its install (${spec})…\n`)
+  const npm = process.platform === "win32" ? "npm.cmd" : "npm"
+  const result = childProcess.spawnSync(npm, ["install", "--global", "--no-fund", "--no-audit", spec], {
+    stdio: ["ignore", "ignore", "pipe"],
+    encoding: "utf8",
+    timeout: 10 * 60 * 1000,
+    windowsHide: true,
+    shell: process.platform === "win32",
+  })
+  if (result.status !== 0) {
+    const detail = (result.stderr || "").trim().split("\n").slice(-3).join(" ").slice(0, 300)
+    process.stderr.write(`W1 could not repair its install automatically${detail ? `: ${detail}` : "."}\n`)
+    return null
+  }
+  // Resolution is cached per process, so re-exec rather than re-resolve in place.
+  const relaunch = childProcess.spawnSync(process.execPath, [__filename, ...process.argv.slice(2)], {
+    stdio: "inherit",
+    env: { ...process.env, W1_NPM_REPAIRED: "1" },
+  })
+  process.exit(typeof relaunch.status === "number" ? relaunch.status : 1)
+}
+
 function resolveNativePackage() {
   const platform = platformName()
   const arch = architectureName()
   const candidates = packageCandidates(platform, arch)
-  const declared = meta.optionalDependencies || {}
   for (const name of candidates) {
-    if (declared[name] !== meta.version) continue
-    try {
-      const manifestPath = requireFromHere.resolve(`${name}/package.json`)
-      const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"))
-      if (manifest.name !== name || manifest.version !== meta.version) continue
-      const root = path.dirname(manifestPath)
-      const executable = path.join(root, "bin", platform === "windows" ? "w1.exe" : "w1")
-      const runtimeRoot = path.join(root, "bin", "w1-runtime")
-      const runtime = path.join(runtimeRoot, "run-stream.mjs")
-      const engine = path.join(runtimeRoot, "w1-engine.mjs")
-      const buildIdFile = path.join(runtimeRoot, "BUILD_ID")
-      if (!fs.existsSync(executable) || !fs.existsSync(runtime)) continue
-      // Fail closed on engine identity. A packaged build must never fall through to a user-writable
-      // ~/.w1/runtime or a source checkout because its own engine bundle is absent or unidentified.
-      if (!fs.existsSync(engine) || !fs.existsSync(buildIdFile)) continue
-      const buildId = fs.readFileSync(buildIdFile, "utf8").trim()
-      if (!buildId || buildId === "source") continue
-      return executable
-    } catch {
-      // Try the next explicitly declared compatible package.
-    }
+    const executable = usableExecutable(name, platform)
+    if (executable) return executable
   }
+  repairNativePackage(candidates, platform)
   throw new Error(
-    `The W1 native package for ${platform}/${arch} is missing or incomplete. ` +
-      `Reinstall exactly this release with: npm install --global @w1-lab/cli@${meta.version}`,
+    `The W1 native package for ${platform}/${arch} is missing, and W1 could not install it for you. ` +
+      `Check your network, then run: npm install --global @w1-lab/cli@${meta.version}`,
   )
+}
+
+/**
+ * Delete native packages left behind by older releases.
+ *
+ * Every W1 version pins its natives to its own version, so a native at any OTHER version is dead
+ * weight the moment the meta package moves: ~200MB per stale copy, and — worse — a machine that
+ * accumulates them looks fine to `npm ls` while W1 refuses to start, because the launcher requires
+ * an exact version match and skips them all. Users do not know that, so they reinstall, get
+ * "changed 2 packages", and are told to reinstall again.
+ *
+ * Swept opportunistically AFTER a successful resolve, so a failure here can never stop W1 running.
+ * Only ever removes directories under the same node_modules that already hold a @w1-lab/cli-*
+ * package, and only when the manifest inside names a @w1-lab/cli-* package at a version that is
+ * not ours — never a path we merely guessed at.
+ */
+function sweepStaleNatives(executable) {
+  if (process.env.W1_NPM_NO_SWEEP === "1") return
+  try {
+    const scopeRoot = path.dirname(path.dirname(path.dirname(executable)))
+    if (path.basename(scopeRoot) !== "@w1-lab") return
+    for (const entry of fs.readdirSync(scopeRoot)) {
+      if (!entry.startsWith("cli-")) continue
+      const candidate = path.join(scopeRoot, entry)
+      const manifestPath = path.join(candidate, "package.json")
+      if (!fs.existsSync(manifestPath)) continue
+      let manifest
+      try {
+        manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"))
+      } catch {
+        continue
+      }
+      if (typeof manifest.name !== "string" || !manifest.name.startsWith("@w1-lab/cli-")) continue
+      if (manifest.version === meta.version) continue
+      fs.rmSync(candidate, { recursive: true, force: true })
+      process.stderr.write(`W1 removed a stale runtime (${manifest.name}@${manifest.version}).\n`)
+    }
+  } catch {
+    // Housekeeping is never worth failing a run over.
+  }
 }
 
 function main() {
@@ -123,6 +208,8 @@ function main() {
     console.error(`W1 could not start: ${error instanceof Error ? error.message : String(error)}`)
     process.exit(1)
   }
+
+  sweepStaleNatives(executable)
 
   const child = childProcess.spawn(executable, process.argv.slice(2), { stdio: "inherit", windowsHide: false })
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
