@@ -981,9 +981,13 @@ export async function runW1Tui(input: Input) {
     await Promise.race([unsubscribe, Bun.sleep(900)])
     engine.close()
     await lifecycle.close({ showExit: true, sessionID: activeThreadID, history: history(active()?.items ?? []) })
+    // ENGINE ZERO truth: the engine lives INSIDE this process now, so closing W1 stops
+    // everything with it. The daemon-era copy promised background tasks survive the CLI —
+    // that promise died with the daemon, and repeating it would be a lie about durability.
+    // What IS durable is the journal: every thread resumes exactly where it stopped.
     process.stdout.write(running
-      ? `W1 closed. ${running} background task${running === 1 ? " is" : "s are"} still running; start W1 again and use /resume.\n`
-      : "W1 closed. Closing the CLI does not stop engine-owned background tasks; use /resume when you return.\n")
+      ? `W1 closed while ${running} task${running === 1 ? " was" : "s were"} still working — work stops when W1 closes. Your progress is saved; start W1 again and use /resume to continue.\n`
+      : "W1 closed. Your threads are saved; use /resume when you return.\n")
   }
 }
 
