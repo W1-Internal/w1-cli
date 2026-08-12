@@ -114,6 +114,12 @@ jobs:
           bun run script/build.ts --target=darwin-x64 --keep-dist --skip-install --skip-embed-web-ui
           bun run script/build.ts --target=darwin-x64-baseline --keep-dist --skip-install --skip-embed-web-ui
           bun run script/build.ts --target=windows-x64 --keep-dist --skip-install --skip-embed-web-ui
+          # Windows CPUs without AVX2 (Celeron/Pentium/Atom — Jasper Lake, Gemini Lake, and
+          # anything pre-Haswell) cannot execute Bun's default build: it dies instantly with
+          # STATUS_STACK_BUFFER_OVERRUN (0xC0000409) and prints nothing at all. macOS has had a
+          # baseline variant all along; Windows never did, so the launcher looked for
+          # cli-windows-x64-baseline, did not find it, fell back to the AVX2 binary and crashed.
+          bun run script/build.ts --target=windows-x64-baseline --keep-dist --skip-install --skip-embed-web-ui
 
       - name: Stage fail-closed npm package tree
         working-directory: packages/opencode
@@ -128,17 +134,27 @@ jobs:
         run: |
           mac="dist/npm/w1-cli-darwin-arm64"
           win="dist/npm/w1-cli-windows-x64"
+          winbase="dist/npm/w1-cli-windows-x64-baseline"
           test -x dist/npm/w1-cli/bin/w1
           test -x "$mac/bin/w1"
           test -s "$win/bin/w1.exe"
+          test -s "$winbase/bin/w1.exe"
           test "$(cat "$mac/bin/w1-runtime/BUILD_ID")" = "$HARNESS_REF"
           test "$(cat "$win/bin/w1-runtime/BUILD_ID")" = "$HARNESS_REF"
+          test "$(cat "$winbase/bin/w1-runtime/BUILD_ID")" = "$HARNESS_REF"
           test -s "$mac/bin/w1-runtime/run-stream.mjs"
           test -s "$win/bin/w1-runtime/run-stream.mjs"
           test -s "$mac/assets/skills/security/SKILL.md"
           test -s "$win/assets/skills/security/SKILL.md"
           file "$mac/bin/w1" | grep -q 'Mach-O 64-bit arm64 executable'
           file "$win/bin/w1.exe" | grep -Eq 'PE32\+ executable.*x86-64'
+          file "$winbase/bin/w1.exe" | grep -Eq 'PE32\+ executable.*x86-64'
+          # The whole point of this package is that it differs from the AVX2 build. Identical
+          # bytes would mean the baseline target silently fell back and shipped a binary that
+          # still cannot start on the CPUs it exists for.
+          if cmp -s "$win/bin/w1.exe" "$winbase/bin/w1.exe"; then
+            echo 'baseline w1.exe is byte-identical to the AVX2 build' >&2; exit 1
+          fi
           # Pack once, under a deterministic name, and publish exactly these bytes later. npm derives
           # its own tarball name from the scoped package name, so rename to the staging directory name
           # to keep build and publish referring to the same artifact.
@@ -214,7 +230,7 @@ jobs:
             exit 1
           }
           npm whoami >/dev/null
-          for package in @w1-lab/cli-darwin-arm64 @w1-lab/cli-darwin-x64 @w1-lab/cli-darwin-x64-baseline @w1-lab/cli-windows-x64 @w1-lab/cli; do
+          for package in @w1-lab/cli-darwin-arm64 @w1-lab/cli-darwin-x64 @w1-lab/cli-darwin-x64-baseline @w1-lab/cli-windows-x64 @w1-lab/cli-windows-x64-baseline @w1-lab/cli; do
             if npm view "$package@$VERSION" version >/dev/null 2>&1; then
               echo "Refusing to overwrite existing $package@$VERSION" >&2
               exit 1
@@ -236,6 +252,7 @@ jobs:
           npm publish release/npm-packed/w1-cli-darwin-x64.tgz --access public --tag next --provenance
           npm publish release/npm-packed/w1-cli-darwin-x64-baseline.tgz --access public --tag next --provenance
           npm publish release/npm-packed/w1-cli-windows-x64.tgz --access public --tag next --provenance
+          npm publish release/npm-packed/w1-cli-windows-x64-baseline.tgz --access public --tag next --provenance
           npm publish release/npm-packed/w1-cli.tgz --access public --tag next --provenance
 
       - name: Verify registry contents before promotion
@@ -246,7 +263,7 @@ jobs:
           # The registry serves a freshly published version's aggregated packument a little after the
           # publish returns, so an immediate read reports 404 and fails a release that actually
           # succeeded. Poll instead of asserting once.
-          for package in @w1-lab/cli-darwin-arm64 @w1-lab/cli-darwin-x64 @w1-lab/cli-darwin-x64-baseline @w1-lab/cli-windows-x64 @w1-lab/cli; do
+          for package in @w1-lab/cli-darwin-arm64 @w1-lab/cli-darwin-x64 @w1-lab/cli-darwin-x64-baseline @w1-lab/cli-windows-x64 @w1-lab/cli-windows-x64-baseline @w1-lab/cli; do
             for attempt in $(seq 1 30); do
               if [ "$(npm view "$package@$VERSION" version 2>/dev/null)" = "$VERSION" ]; then
                 echo "$package@$VERSION visible after ${attempt} attempt(s)"
@@ -272,6 +289,7 @@ jobs:
           npm dist-tag add @w1-lab/cli-darwin-x64@"$VERSION" latest
           npm dist-tag add @w1-lab/cli-darwin-x64-baseline@"$VERSION" latest
           npm dist-tag add @w1-lab/cli-windows-x64@"$VERSION" latest
+          npm dist-tag add @w1-lab/cli-windows-x64-baseline@"$VERSION" latest
           npm dist-tag add @w1-lab/cli@"$VERSION" latest
           # dist-tags are eventually consistent too, exactly like the packument read above. A single
           # assert here reported 0.2.3 as a FAILED release that had in fact published everything and
