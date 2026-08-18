@@ -59,7 +59,13 @@ runs:
         # e.g. ./patches/ for standard-openapi
         # https://github.com/oven-sh/bun/issues/28147
         if [ "$RUNNER_OS" = "Windows" ]; then
-          bun install --linker hoisted ${{ inputs.install-flags }}
+          # Bun can leave a partially-renamed patched package in its Windows
+          # cache (ENOTEMPTY / NtSetInformationFile). A clean-cache retry is
+          # safe on an ephemeral runner and keeps the first attempt fast.
+          bun install --linker hoisted ${{ inputs.install-flags }} || {
+            bun pm cache rm
+            bun install --linker hoisted ${{ inputs.install-flags }}
+          }
         else
           bun install ${{ inputs.install-flags }}
         fi
