@@ -100,6 +100,9 @@ function rgba(hex: string, value?: number): RGBA {
   return value === undefined ? color : alpha(color, value)
 }
 
+/** W1 brand olive, the same value the sign-in page uses. */
+const W1_OLIVE = RGBA.fromHex("#bccb4f")
+
 function mode(bg: RGBA): "dark" | "light" {
   return luminance(bg) > 0.5 ? "light" : "dark"
 }
@@ -442,13 +445,17 @@ export function generateSystem(colors: TerminalColors, pick: "dark" | "light"): 
       markdownHeading: fg,
       markdownLink: ansi.blue,
       markdownLinkText: ansi.cyan,
-      markdownCode: ansi.green,
+      // W1 brand olive. Tool names and identifiers arrive as markdown code spans, so this token is
+      // the most visible colour in a turn — it belongs to the brand, not to the terminal's ANSI green.
+      markdownCode: W1_OLIVE,
       markdownBlockQuote: ansi.yellow,
       markdownEmph: ansi.yellow,
       markdownStrong: fg,
       markdownHorizontalRule: grays[7],
-      markdownListItem: ansi.blue,
-      markdownListEnumeration: ansi.cyan,
+      // Bullet dashes are W1 olive rather than an ANSI slot. ANSI slots are remapped by the host
+      // terminal, so Windows Terminal rendered these noticeably brighter than macOS.
+      markdownListItem: W1_OLIVE,
+      markdownListEnumeration: W1_OLIVE,
       markdownImage: ansi.blue,
       markdownImageText: ansi.cyan,
       markdownCodeBlock: fg,
@@ -543,7 +550,11 @@ function map(
         body: scrollbackTheme.textMuted,
       },
       user: {
-        body: scrollbackTheme.primary,
+        // Not scrollbackTheme.primary: that is an ANSI slot, and the host terminal decides what the
+        // slot looks like. The identical build rendered muted on macOS and bright blue on Windows
+        // Terminal. The "› " prefix already marks these lines, so plain foreground reads the same
+        // everywhere.
+        body: scrollbackTheme.text,
       },
       assistant: {
         body: scrollbackTheme.text,
@@ -623,7 +634,9 @@ export const RUN_THEME_FALLBACK: RunTheme = {
   },
   entry: {
     system: tone(seed.muted),
-    user: tone(seed.highlight),
+    // Matches the themed path: user lines use plain foreground so they read the same on every host
+    // terminal. The "› " prefix is what marks them, not the colour.
+    user: tone(seed.text),
     assistant: tone(seed.text),
     reasoning: tone(seed.muted),
     tool: tone(seed.text, seed.muted),

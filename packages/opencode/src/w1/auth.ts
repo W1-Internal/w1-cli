@@ -113,8 +113,24 @@ export async function signIn(options: SignInOptions = {}): Promise<Session> {
   let settled = false
   let timer: ReturnType<typeof setTimeout> | undefined
 
+  // Assigned once the port is known; the /go route below closes over it.
+  let hostedStartUrl = ""
+
   const server = createServer(async (request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1")
+    // The instant landing page. The browser is pointed HERE rather than at the hosted sign-in URL
+    // so the first paint is local and immediate, and the auth hosts get preconnected while the
+    // user reads it. Guarded by the same nonce as the callback so a stray page cannot drive it.
+    if (url.pathname === "/go") {
+      if (url.searchParams.get("flow") !== nonce || !hostedStartUrl) {
+        response.writeHead(400, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" })
+        response.end("Invalid W1 sign-in request.")
+        return
+      }
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" })
+      response.end(signingInPage(hostedStartUrl))
+      return
+    }
     if (url.pathname !== "/done") {
       response.writeHead(404)
       response.end()
@@ -181,9 +197,14 @@ export async function signIn(options: SignInOptions = {}): Promise<Session> {
   const start = new URL("/auth/start", backend)
   start.searchParams.set("cb", callback.toString())
   const startUrl = start.toString()
+  hostedStartUrl = startUrl
+  // Print the HOSTED url, not the loopback one: the printed line is the fallback for headless and
+  // remote sessions, where a 127.0.0.1 address on this machine is useless to the reader.
   options.onStart?.(startUrl)
   timer = setTimeout(() => finish(new Error("W1 sign-in timed out. Run `w1 login` to try again.")), timeoutMs)
-  await browser(startUrl).catch(() => {
+  const landing = new URL(`http://127.0.0.1:${address.port}/go`)
+  landing.searchParams.set("flow", nonce)
+  await browser(landing.toString()).catch(() => {
     // The URL is always printed before this call so headless users can open it manually.
   })
   return result.promise
@@ -201,6 +222,34 @@ export async function signOut(options: SignOutOptions = {}) {
   }
   await rm(sessionPath(options.home), { force: true })
   return Boolean(session)
+}
+
+/**
+ * The page the browser lands on FIRST, served by the loopback in about a millisecond.
+ *
+ * Opening the hosted sign-in URL directly meant the very first navigation was a 302 into a ~100KB
+ * JavaScript app on a cold DNS/TLS path. The tab sat blank and titleless for seconds and looked
+ * hung — the same URL felt instant when clicked a moment later only because the connection was
+ * already warm. This page cannot be slow: it is local, it renders immediately, and it says what is
+ * happening.
+ *
+ * The preconnects are the actual speed win. They start DNS, TCP and TLS to the auth hosts while
+ * the user is reading this page, so the redirect below reuses a warm connection instead of paying
+ * for a cold one. The redirect is a script AND a meta refresh so it still fires if script is
+ * blocked, and referrer is suppressed so the loopback URL never leaks to the auth host.
+ */
+function signingInPage(target: string) {
+  const escaped = target.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;")
+  return `<!doctype html><meta charset=utf-8><meta name=referrer content=no-referrer>` +
+    `<link rel=preconnect href="https://app.w1lab.com" crossorigin>` +
+    `<link rel=preconnect href="https://api.workos.com" crossorigin>` +
+    `<link rel=dns-prefetch href="https://api.workos.com">` +
+    `<title>Signing you in to W1…</title>` +
+    `<meta http-equiv=refresh content="1;url=${escaped}">` +
+    `<body style="font-family:system-ui;background:#0f0f0c;color:#e7e2d6;display:grid;place-items:center;height:100vh;margin:0">` +
+    `<div style="text-align:center"><h2 style="color:#bccb4f;font-weight:600">Signing you in to W1…</h2>` +
+    `<p style="opacity:.7">Taking you to the sign-in page.</p></div>` +
+    `<script>location.replace(${JSON.stringify(target)})</script>`
 }
 
 function callbackPage(success: boolean) {

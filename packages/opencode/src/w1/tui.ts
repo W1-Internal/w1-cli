@@ -5,6 +5,7 @@ import { createRuntimeLifecycle, type Lifecycle } from "@/cli/cmd/run/runtime.li
 import { resolveRunTuiConfig } from "@/cli/cmd/run/runtime.boot"
 import type { FooterApi, FooterSubagentState, RunPrompt, StreamCommit } from "@/cli/cmd/run/types"
 import { createW1Attachments } from "./attachments"
+import { isNewerVersion, latestPublishedVersion, runNpmUpdate } from "./update"
 import { W1Auth } from "./auth"
 import {
   EngineClient,
@@ -22,6 +23,9 @@ import {
   assertAttachmentBytes,
   interactionWasDelivered,
   isAmbiguousEngineFailure,
+  readW1Wake,
+  w1WakeDelayMs,
+  type W1Wake,
 } from "./tui-contract"
 
 type Input = {
@@ -42,7 +46,14 @@ type PendingSubmit = {
   text: string
   threadId: string
   attachmentIds?: string[]
-  workerRequest: { runtimeMode: string; first: boolean; model?: string }
+  workerRequest: {
+    runtimeMode: string
+    first: boolean
+    model?: string
+    /** Set only by the waker. The engine reads this INSTEAD of `text`, so a resume never enters
+     *  the transcript as something the user typed. */
+    systemContinuation?: string
+  }
 }
 type Controller = {
   id: string
@@ -61,6 +72,8 @@ type Controller = {
   result?: Record<string, unknown>
   pending?: PendingInteraction
   pendingSubmit?: PendingSubmit
+  /** A wake this thread is subscribed to, and the timer that will resume it. */
+  wake?: { jobId: string; label: string; timer: ReturnType<typeof setTimeout> }
   tools: Map<string, ToolTab>
   tabs: FooterSubagentState
   subscription?: { close(): Promise<void> }
@@ -425,7 +438,63 @@ export async function runW1Tui(input: Input) {
     if (tag === "RESULT") controller.result = payload
   }
 
+  const clearWake = (controller: Controller) => {
+    if (controller.wake) clearTimeout(controller.wake.timer)
+    controller.wake = undefined
+  }
+
+  /** Resume this thread when its wake is due.
+   *
+   * The engine owns the job and the schedule; this timer only decides WHEN to ask. A re-check
+   * that finds the job still running costs no model call and hands back a fresh `nextCheckAt`,
+   * which re-arms this timer through `finishTurn` — so one wait is one timer, never a poll loop. */
+  const armWake = (controller: Controller, wait: W1Wake) => {
+    clearWake(controller)
+    const timer = setTimeout(() => {
+      const current = controllers.get(controller.id)
+      if (!current || current.wake?.jobId !== wait.jobId) return
+      current.wake = undefined
+      // A live turn already carries the wait on its own path and will re-arm this timer when it
+      // ends; waking on top of it would double-drive the thread.
+      if (current.state === "running" || current.state === "awaiting_user") return
+      current.turnStarted = Date.now()
+      current.state = "running"
+      current.sawSay = false
+      current.narration = ""
+      void submitTurn(current, {
+        clientRequestId: randomUUID(),
+        workspacePath: input.directory,
+        // Not a user message: the engine reads `systemContinuation` and never puts this text in
+        // the transcript. Resubmitting the user's own words here is what produced nine identical
+        // turns on the desktop.
+        text: `Resuming: ${wait.label}.`,
+        threadId: current.id,
+        workerRequest: {
+          runtimeMode: input.fullAccess ? "full-access" : "approval-required",
+          first: false,
+          ...(input.model ? { model: input.model } : {}),
+          systemContinuation:
+            `Durable wait wake for ${wait.label} (${wait.jobId}). ` +
+            "Check the existing scheduled job exactly once. Do not launch the original side effect again.",
+        },
+      }).catch((cause) => {
+        current.state = "idle"
+        // The wait is durable in the engine either way; re-arm so a transient failure is not
+        // the end of it, and say so rather than going quiet.
+        armWake(current, { ...wait, nextCheckAt: new Date(Date.now() + 30_000).toISOString() })
+        if (isVisible(current)) {
+          footer?.append(system(`W1 could not resume ${wait.label}: ${cause instanceof Error ? cause.message : String(cause)}. Retrying shortly.`, "error"))
+        }
+      })
+    }, w1WakeDelayMs(wait, Date.now()))
+    timer.unref?.()
+    controller.wake = { jobId: wait.jobId, label: wait.label, timer }
+  }
+
   const finishTurn = (controller: Controller, payload: Record<string, unknown>) => {
+    // Read the wake BEFORE the last result is overwritten: the durable turn.completed payload
+    // and the live RESULT frame are two views of the same turn and either may carry it.
+    const wake = readW1Wake(payload.awaitingJob) ?? readW1Wake(record(controller.result).awaitingJob)
     controller.result = payload
     finishAssistant(controller)
     controller.state = payload.error || String(payload.status ?? "").includes("error") ? "failed" : "idle"
@@ -443,6 +512,14 @@ export async function runW1Tui(input: Input) {
     controller.pending = undefined
     controller.pendingSubmit = undefined
     controller.narration = ""
+    // THE CLI WAKES ITSELF. Until now nothing here watched a wait at all: Kai's 2-minute wake
+    // ended its turn in 7s and sat silent for 13 minutes until he typed again — and the model,
+    // seeing a job that had genuinely completed, then reported "returned after the full 2-minute
+    // wait ✅". A confident lie, because the timer was right and only the waking was missing.
+    // A failed turn keeps its wait armed: the engine still holds the subscription, and dropping
+    // the timer here would strand it until the user happened to type.
+    if (wake) armWake(controller, wake)
+    else if (controller.state !== "failed") clearWake(controller)
   }
 
   const onDurable = async (controller: Controller, event: EngineEvent) => {
@@ -626,6 +703,8 @@ export async function runW1Tui(input: Input) {
       threadId: id,
       archived,
     })
+    const controller = controllers.get(id)
+    if (controller && archived) clearWake(controller)
     updateSummary({ ...summary, archived, updatedAt: new Date().toISOString() })
     return true
   }
@@ -661,6 +740,44 @@ export async function runW1Tui(input: Input) {
       reconnecting = undefined
     })
     return reconnecting
+  }
+
+  let updating = false
+
+  /**
+   * Tells the user, once per launch, that updates are self-service. Deliberately synchronous and
+   * offline: a registry read here would either delay the first prompt or land a surprise line in the
+   * middle of a conversation once it finally resolved. /update does the network check on demand.
+   */
+  const announceUpdates = () => {
+    footer?.append(system(`W1 ${clientVersion} · run /update to install the latest version.`, "system", true))
+  }
+
+  const runSelfUpdate = async () => {
+    if (updating) return
+    updating = true
+    footer?.append(system("Updating W1…", "system", true))
+    try {
+      const latest = await latestPublishedVersion()
+      if (latest && !isNewerVersion(latest, clientVersion)) {
+        footer?.append(system(`W1 ${clientVersion} is already the latest version.`, "system", true))
+        return
+      }
+      const outcome = await runNpmUpdate()
+      if (outcome.status === "failed") {
+        footer?.append(system(`Update failed: ${outcome.message}`, "error"))
+        return
+      }
+      footer?.append(
+        system(
+          `W1 updated to ${latest ?? "the latest version"}. Restart W1 for it to take effect — your threads are kept.`,
+          "system",
+          true,
+        ),
+      )
+    } finally {
+      updating = false
+    }
   }
 
   const initialController = await ensureController(activeThreadID)
@@ -723,14 +840,18 @@ export async function runW1Tui(input: Input) {
       const controller = active()
       if (!controller) return
       finishAssistant(controller, true)
+      // Stop means stop. A wake left armed here would restart the thread the user just stopped.
+      clearWake(controller)
       void engine.request("turn.stop", { threadId: controller.id })
     },
     onThreadCatalogRequest: publishThreads,
     onThreadSelect: switchThread,
     onThreadNew: newThread,
     onThreadArchive: archiveThread,
+    onUpdate: runSelfUpdate,
   })
   footer = lifecycle.footer
+  announceUpdates()
   const removeDisconnectListener = engine.onDisconnect(() => {
     if (closing) return
     footer?.event({ type: "stream.patch", patch: { status: "Reconnecting to W1 Engine…" } })
@@ -774,14 +895,39 @@ export async function runW1Tui(input: Input) {
       const queued = initial.splice(0)
       const combined: RunPrompt = { ...prompt, parts: [...prompt.parts, ...queued.map((item) => item.part)] }
       const paths = attachmentPaths(combined)
-      const reminder = paths.length
-        ? `\n\n<system-reminder>Attached images are stored locally at:\n${paths.map((item) => `- ${item}`).join("\n")}\nUse view_image when visual inspection is needed.</system-reminder>`
-        : ""
       const attachmentIds = await Promise.all(attachmentImages(combined).map(async (image) => {
         const encoded = dataUrl(image)
         const ack = await engine.request("engine.attachment.put", encoded) as { attachmentId: string }
         return ack.attachmentId
       }))
+      // Tell the model the HANDLES, not just where the bytes sit on disk.
+      //
+      // The reminder used to list local file paths only, so a model asked to look at an image had
+      // no handle to use and invented one from the visible filename —
+      // view_image {"path":"attachment:WhatsApp Image 2026-07-27 at 20.29.54.jpeg"} — which is not
+      // a handle and always failed. Naming the real handles removes the guess.
+      //
+      // The engine ids the same bytes as `sha256:<full hex>` while view_image handles are
+      // `attachment:<first 12 of that hex>`. Two spellings of one identity; convert rather than
+      // leave the model to reconcile them.
+      const handles = attachmentIds.flatMap((id) => {
+        const hex = /^sha256:([a-f0-9]{64})$/.exec(id)?.[1]
+        return hex ? [`attachment:${hex.slice(0, 12)}`] : []
+      })
+      const reminderLines = [
+        ...(handles.length
+          ? [
+              `Attached images, ready for view_image (pass the handle as "path"):`,
+              ...handles.map((handle, index) => `- ${handle}${paths[index] ? ` (${paths[index]})` : ""}`),
+            ]
+          : []),
+        ...(handles.length === 0 && paths.length
+          ? [`Attached images are stored locally at:`, ...paths.map((item) => `- ${item}`)]
+          : []),
+      ]
+      const reminder = reminderLines.length
+        ? `\n\n<system-reminder>${reminderLines.join("\n")}\nUse view_image when visual inspection is needed. Do not invent a handle from a filename.</system-reminder>`
+        : ""
       const submission: PendingSubmit = {
         clientRequestId: randomUUID(),
         workspacePath: input.directory,
@@ -825,6 +971,8 @@ export async function runW1Tui(input: Input) {
     closing = true
     removeDisconnectListener()
     if (elapsedTimer) clearInterval(elapsedTimer)
+    // The engine keeps the wait; this process must not hold a timer that outlives its own TUI.
+    for (const controller of controllers.values()) clearWake(controller)
     const running = summaries.filter((item) => item.state === "running" || item.state === "awaiting_user").length
     const unsubscribe = Promise.allSettled([
       ...(catalogSubscription ? [catalogSubscription.close()] : []),
@@ -833,9 +981,13 @@ export async function runW1Tui(input: Input) {
     await Promise.race([unsubscribe, Bun.sleep(900)])
     engine.close()
     await lifecycle.close({ showExit: true, sessionID: activeThreadID, history: history(active()?.items ?? []) })
+    // ENGINE ZERO truth: the engine lives INSIDE this process now, so closing W1 stops
+    // everything with it. The daemon-era copy promised background tasks survive the CLI —
+    // that promise died with the daemon, and repeating it would be a lie about durability.
+    // What IS durable is the journal: every thread resumes exactly where it stopped.
     process.stdout.write(running
-      ? `W1 closed. ${running} background task${running === 1 ? " is" : "s are"} still running; start W1 again and use /resume.\n`
-      : "W1 closed. Closing the CLI does not stop engine-owned background tasks; use /resume when you return.\n")
+      ? `W1 closed while ${running} task${running === 1 ? " was" : "s were"} still working — work stops when W1 closes. Your progress is saved; start W1 again and use /resume to continue.\n`
+      : "W1 closed. Your threads are saved; use /resume when you return.\n")
   }
 }
 

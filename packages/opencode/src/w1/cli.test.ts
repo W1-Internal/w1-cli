@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { mkdir } from "fs/promises"
+import { mkdir, mkdtemp, rm } from "fs/promises"
 import path from "path"
 import os from "os"
 import * as Pty from "@opencode-ai/core/pty/pty.bun"
@@ -138,7 +138,14 @@ test("--yolo enables full access and shows activity without exposing reasoning",
 })
 
 test.skipIf(process.platform === "win32")("interactive W1 uses the product TUI and renders runtime state", async () => {
-  const root = (await Bun.$`mktemp -d ${path.join(os.tmpdir(), "w1-cli-tui.XXXXXX")}`.text()).trim()
+  // A unix socket path is capped at 104 bytes on macOS (108 on Linux) — the limit is on the path,
+  // not the directory. macOS's per-user TMPDIR is ~49 bytes on its own, and the engine's endpoint
+  // adds `/.w1/engine/surfaces/cli/v1/ipc/w1-v1.sock` (42), which crosses it and makes listen fail
+  // with nothing on stdout: the composer simply never appears. That is a property of this
+  // temporary directory, not of the product — a real home gives `/Users/<name>/.w1/…` at roughly
+  // 55 bytes. Keep the fixture root short so this exercises the endpoint rule instead of the
+  // platform's path limit.
+  const root = (await Bun.$`mktemp -d ${path.join("/tmp", "w1t.XXXXXX")}`.text()).trim()
   const runtime = path.join(root, "mock-runtime.mjs")
   const received = path.join(root, "received-turn.json")
   const image = path.join(root, "reference.png")
@@ -242,7 +249,7 @@ test.skipIf(process.platform === "win32")("interactive W1 uses the product TUI a
 }, 15_000)
 
 test("image path attachments are persisted under the local W1 state directory", async () => {
-  const root = (await Bun.$`mktemp -d ${path.join(os.tmpdir(), "w1-cli-image.XXXXXX")}`.text()).trim()
+  const root = await mkdtemp(path.join(os.tmpdir(), "w1-cli-image."))
   const source = path.join(root, "source.png")
   await Bun.write(source, Buffer.from("89504e470d0a1a0a", "hex"))
   try {
@@ -253,7 +260,7 @@ test("image path attachments are persisted under the local W1 state directory", 
     expect(attachment.part.source.path).toContain(path.join(".w1", "attachments", "thread_test"))
     expect(await Bun.file(attachment.part.source.path).exists()).toBe(true)
   } finally {
-    await Bun.$`rm -rf ${root}`
+    await rm(root, { recursive: true, force: true })
   }
 })
 

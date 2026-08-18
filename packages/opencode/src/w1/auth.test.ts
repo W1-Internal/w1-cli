@@ -43,8 +43,28 @@ describe("W1 shared browser auth", () => {
       timeoutMs: 2_000,
       nonce: "test-flow",
       now: () => new Date("2026-08-09T00:00:00.000Z"),
-      async openBrowser(startUrl) {
-        const start = new URL(startUrl)
+      async openBrowser(landingUrl) {
+        // The browser is now pointed at the LOOPBACK first, so the first paint is instant and the
+        // auth hosts get preconnected. Opening the hosted URL directly left the tab blank for
+        // seconds on a cold connection and looked hung.
+        const landing = new URL(landingUrl)
+        expect(landing.hostname).toBe("127.0.0.1")
+        expect(landing.pathname).toBe("/go")
+
+        const page = await fetch(landing)
+        expect(page.status).toBe(200)
+        const html = await page.text()
+        expect(html).toContain("Signing you in to W1")
+        expect(html).toContain('rel=preconnect href="https://api.workos.com"')
+
+        // A landing request without the flow nonce must not reveal or drive the sign-in.
+        const forgedLanding = new URL(landing)
+        forgedLanding.searchParams.set("flow", "wrong")
+        expect((await fetch(forgedLanding)).status).toBe(400)
+
+        // The page redirects to the real hosted sign-in; follow it the way the browser would.
+        const target = html.match(/location\.replace\("([^"]+)"\)/)?.[1] ?? ""
+        const start = new URL(target)
         expect(start.origin).toBe("https://app.w1lab.com")
         expect(start.pathname).toBe("/auth/start")
         const callback = new URL(start.searchParams.get("cb") ?? "")

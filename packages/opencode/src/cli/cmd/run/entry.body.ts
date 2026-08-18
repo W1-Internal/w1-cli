@@ -183,6 +183,14 @@ export function entryBody(commit: StreamCommit): RunEntryBody {
     }
 
     if (commit.phase === "final") {
+      // Live streaming sends prose as "progress" and closes with an empty "final", so a final with
+      // no text stays invisible. Replay has no stream to coalesce and delivers the whole reply in one
+      // final commit — discarding that is why resuming a thread showed the user's messages with no
+      // agent responses at all.
+      if (raw) {
+        return markdownBody(raw)
+      }
+
       return commit.interrupted ? textBody("assistant interrupted") : RUN_ENTRY_NONE
     }
 
@@ -195,6 +203,11 @@ export function entryBody(commit: StreamCommit): RunEntryBody {
     }
 
     if (commit.phase === "final") {
+      // Same as assistant: a replayed reasoning block arrives whole, in one final commit.
+      if (raw) {
+        return reasoningBody(raw)
+      }
+
       return commit.interrupted ? textBody("reasoning interrupted") : RUN_ENTRY_NONE
     }
 

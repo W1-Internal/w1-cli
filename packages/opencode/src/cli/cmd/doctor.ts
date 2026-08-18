@@ -98,13 +98,13 @@ async function diagnostics(directory: string) {
       checks.push({
         name: "handshake",
         status: "ok",
-        detail: `daemon ${status.engineVersion} · build ${status.buildId} · ${status.activeTurnCount} active`,
+        detail: `engine ${status.engineVersion} · build ${status.buildId} · ${status.activeTurnCount} active`,
       })
       const auth = await client.request("auth.snapshot", {}) as { state?: string }
       checks.push({
         name: "engine auth",
         status: auth.state === "signed_in" ? "ok" : "fail",
-        detail: auth.state === "signed_in" ? "daemon sees the shared W1 session" : "daemon is signed out",
+        detail: auth.state === "signed_in" ? "engine sees the shared W1 session" : "engine is signed out — run `w1 login`",
       })
       const threads = await client.request("engine.threads.list", { workspacePath: directory, includeArchived: true }) as ThreadSummary[]
       const visibleThreads = threads.filter((item) => !item.archived)

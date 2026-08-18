@@ -107,6 +107,8 @@ type RunFooterOptions = {
   onThreadCatalogRequest?: FooterThreadCatalogRequest
   onThreadSelect?: FooterThreadSelect
   onThreadNew?: FooterThreadNew
+  /** Runs the self-update. Absent when the surface cannot update itself. */
+  onUpdate?: () => void | Promise<void>
   onThreadArchive?: FooterThreadArchive
   onPasteAttachment?: (text: string) => Promise<RunPromptPaste | undefined>
   brand?: "w1"
@@ -366,6 +368,7 @@ export class RunFooter implements FooterApi {
               onThreadCatalogRequest: options.onThreadCatalogRequest,
               onThreadSelect: options.onThreadSelect,
               onThreadNew: options.onThreadNew,
+              onUpdate: options.onUpdate,
               onThreadArchive: options.onThreadArchive,
               onQueuedRemove: footer.handleQueuedRemove,
               onPasteAttachment: options.onPasteAttachment,

@@ -114,6 +114,12 @@ jobs:
           bun run script/build.ts --target=darwin-x64 --keep-dist --skip-install --skip-embed-web-ui
           bun run script/build.ts --target=darwin-x64-baseline --keep-dist --skip-install --skip-embed-web-ui
           bun run script/build.ts --target=windows-x64 --keep-dist --skip-install --skip-embed-web-ui
+          # Windows CPUs without AVX2 (Celeron/Pentium/Atom — Jasper Lake, Gemini Lake, and
+          # anything pre-Haswell) cannot execute Bun's default build: it dies instantly with
+          # STATUS_STACK_BUFFER_OVERRUN (0xC0000409) and prints nothing at all. macOS has had a
+          # baseline variant all along; Windows never did, so the launcher looked for
+          # cli-windows-x64-baseline, did not find it, fell back to the AVX2 binary and crashed.
+          bun run script/build.ts --target=windows-x64-baseline --keep-dist --skip-install --skip-embed-web-ui
 
       - name: Stage fail-closed npm package tree
         working-directory: packages/opencode
@@ -128,22 +134,60 @@ jobs:
         run: |
           mac="dist/npm/w1-cli-darwin-arm64"
           win="dist/npm/w1-cli-windows-x64"
+          winbase="dist/npm/w1-cli-windows-x64-baseline"
           test -x dist/npm/w1-cli/bin/w1
           test -x "$mac/bin/w1"
           test -s "$win/bin/w1.exe"
+          test -s "$winbase/bin/w1.exe"
           test "$(cat "$mac/bin/w1-runtime/BUILD_ID")" = "$HARNESS_REF"
           test "$(cat "$win/bin/w1-runtime/BUILD_ID")" = "$HARNESS_REF"
+          test "$(cat "$winbase/bin/w1-runtime/BUILD_ID")" = "$HARNESS_REF"
           test -s "$mac/bin/w1-runtime/run-stream.mjs"
           test -s "$win/bin/w1-runtime/run-stream.mjs"
           test -s "$mac/assets/skills/security/SKILL.md"
           test -s "$win/assets/skills/security/SKILL.md"
           file "$mac/bin/w1" | grep -q 'Mach-O 64-bit arm64 executable'
           file "$win/bin/w1.exe" | grep -Eq 'PE32\+ executable.*x86-64'
+          file "$winbase/bin/w1.exe" | grep -Eq 'PE32\+ executable.*x86-64'
+          # The whole point of this package is that it differs from the AVX2 build. Identical
+          # bytes would mean the baseline target silently fell back and shipped a binary that
+          # still cannot start on the CPUs it exists for.
+          if cmp -s "$win/bin/w1.exe" "$winbase/bin/w1.exe"; then
+            echo 'baseline w1.exe is byte-identical to the AVX2 build' >&2; exit 1
+          fi
+          # Pack once, under a deterministic name, and publish exactly these bytes later. npm derives
+          # its own tarball name from the scoped package name, so rename to the staging directory name
+          # to keep build and publish referring to the same artifact.
           mkdir -p dist/npm-packed
           for package in dist/npm/w1-cli-* dist/npm/w1-cli; do
-            npm pack "$package" --pack-destination dist/npm-packed --json >/dev/null
+            name="$(basename "$package")"
+            packed="$(npm pack "$package" --pack-destination dist/npm-packed --json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s)[0].filename))')"
+            mv "dist/npm-packed/$packed" "dist/npm-packed/$name.tgz"
           done
-          sha256sum dist/npm-packed/*.tgz > dist/npm-packed/SHA256SUMS.txt
+          # Record bare filenames so the manifest verifies from whatever directory it is transported
+          # into. sha256sum stores paths verbatim, and the publish job checks from inside the folder.
+          ( cd dist/npm-packed && sha256sum *.tgz > SHA256SUMS.txt )
+
+      - name: Reject unsafe tarball contents
+        working-directory: packages/opencode
+        run: |
+          set -euo pipefail
+          for tarball in dist/npm-packed/*.tgz; do
+            echo "Auditing $tarball"
+            # Symlinks and hardlinks can escape the package root on extraction.
+            if tar -tvzf "$tarball" | grep -Eq '^[lh]'; then
+              echo "Refusing tarball with links: $tarball" >&2; exit 1
+            fi
+            while read -r entry; do
+              case "$entry" in
+                package/bin/*|package/assets/*|package/package.json|package/LICENSE|package/) ;;
+                *) echo "Unexpected file in $tarball: $entry" >&2; exit 1 ;;
+              esac
+            done < <(tar -tzf "$tarball")
+            if tar -tzf "$tarball" | grep -Eq '\.(map|pem|key|p12|pfx)$|(^|/)\.(npmrc|env|netrc|git)|(^|/)id_rsa|(^|/)auth\.json$'; then
+              echo "Refusing tarball with credential or sourcemap content: $tarball" >&2; exit 1
+            fi
+          done
 
       - name: Upload staged npm packages
         uses: actions/upload-artifact@v4
@@ -155,10 +199,44 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  windows-smoke:
+    name: Execute the exact Windows release binaries
+    needs: build
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - name: Download the verified package tree
+        uses: actions/download-artifact@v4
+        with:
+          name: w1-cli-npm-${{ inputs.version }}-mac-windows
+          path: release
+
+      - name: Start both Windows CPU variants
+        shell: pwsh
+        env:
+          EXPECTED_VERSION: ${{ inputs.version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $binaries = @(
+            "release/npm/w1-cli-windows-x64/bin/w1.exe",
+            "release/npm/w1-cli-windows-x64-baseline/bin/w1.exe"
+          )
+          foreach ($binary in $binaries) {
+            if (-not (Test-Path $binary)) { throw "Missing release binary: $binary" }
+            $version = (& $binary --version | Out-String).Trim()
+            if ($LASTEXITCODE -ne 0) { throw "$binary --version exited $LASTEXITCODE" }
+            if ($version -ne $env:EXPECTED_VERSION) {
+              throw "$binary reported '$version', expected '$env:EXPECTED_VERSION'"
+            }
+            & $binary --help | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "$binary --help exited $LASTEXITCODE" }
+            Write-Host "Started and verified $binary ($version)"
+          }
+
   publish:
     name: Publish immutable packages and promote latest
     if: ${{ inputs.publish }}
-    needs: build
+    needs: [build, windows-smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -186,43 +264,76 @@ jobs:
             exit 1
           }
           npm whoami >/dev/null
-          for package in w1-cli-darwin-arm64 w1-cli-darwin-x64 w1-cli-darwin-x64-baseline w1-cli-windows-x64 w1-cli; do
+          for package in @w1-lab/cli-darwin-arm64 @w1-lab/cli-darwin-x64 @w1-lab/cli-darwin-x64-baseline @w1-lab/cli-windows-x64 @w1-lab/cli-windows-x64-baseline @w1-lab/cli; do
             if npm view "$package@$VERSION" version >/dev/null 2>&1; then
               echo "Refusing to overwrite existing $package@$VERSION" >&2
               exit 1
             fi
           done
 
-      - name: Restore executable modes lost in artifact transport
+      - name: Verify transported tarballs match the bytes CI packed
         run: |
-          chmod 755 release/npm/w1-cli/bin/w1
-          chmod 755 release/npm/w1-cli-darwin-arm64/bin/w1
-          chmod 755 release/npm/w1-cli-darwin-x64/bin/w1
-          chmod 755 release/npm/w1-cli-darwin-x64-baseline/bin/w1
+          set -euo pipefail
+          cd release/npm-packed
+          sha256sum --check SHA256SUMS.txt
 
       - name: Publish native packages before the meta package
         run: |
-          npm publish release/npm/w1-cli-darwin-arm64 --access public --tag next --provenance
-          npm publish release/npm/w1-cli-darwin-x64 --access public --tag next --provenance
-          npm publish release/npm/w1-cli-darwin-x64-baseline --access public --tag next --provenance
-          npm publish release/npm/w1-cli-windows-x64 --access public --tag next --provenance
-          npm publish release/npm/w1-cli --access public --tag next --provenance
+          set -euo pipefail
+          # Publish the exact verified tarballs. Publishing directories would ship bytes that were
+          # never checksummed, and would depend on executable modes that artifact transport drops.
+          npm publish release/npm-packed/w1-cli-darwin-arm64.tgz --access public --tag next --provenance
+          npm publish release/npm-packed/w1-cli-darwin-x64.tgz --access public --tag next --provenance
+          npm publish release/npm-packed/w1-cli-darwin-x64-baseline.tgz --access public --tag next --provenance
+          npm publish release/npm-packed/w1-cli-windows-x64.tgz --access public --tag next --provenance
+          npm publish release/npm-packed/w1-cli-windows-x64-baseline.tgz --access public --tag next --provenance
+          npm publish release/npm-packed/w1-cli.tgz --access public --tag next --provenance
 
       - name: Verify registry contents before promotion
         env:
           VERSION: ${{ inputs.version }}
         run: |
-          for package in w1-cli-darwin-arm64 w1-cli-darwin-x64 w1-cli-darwin-x64-baseline w1-cli-windows-x64 w1-cli; do
-            test "$(npm view "$package@$VERSION" version)" = "$VERSION"
+          set -euo pipefail
+          # The registry serves a freshly published version's aggregated packument a little after the
+          # publish returns, so an immediate read reports 404 and fails a release that actually
+          # succeeded. Poll instead of asserting once.
+          for package in @w1-lab/cli-darwin-arm64 @w1-lab/cli-darwin-x64 @w1-lab/cli-darwin-x64-baseline @w1-lab/cli-windows-x64 @w1-lab/cli-windows-x64-baseline @w1-lab/cli; do
+            for attempt in $(seq 1 30); do
+              if [ "$(npm view "$package@$VERSION" version 2>/dev/null)" = "$VERSION" ]; then
+                echo "$package@$VERSION visible after ${attempt} attempt(s)"
+                break
+              fi
+              if [ "$attempt" -eq 30 ]; then
+                echo "$package@$VERSION never became visible on the registry" >&2
+                exit 1
+              fi
+              sleep 10
+            done
           done
+          # The published meta package must only depend on names inside the owned scope.
+          npm view "@w1-lab/cli@$VERSION" optionalDependencies --json \
+            | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const o=JSON.parse(s||"{}");const bad=Object.keys(o).filter(n=>!n.startsWith("@w1-lab/"));if(bad.length){console.error("Unscoped dependency published: "+bad.join(", "));process.exit(1)}})'
 
       - name: Promote the verified release to latest
         env:
           VERSION: ${{ inputs.version }}
         run: |
-          npm dist-tag add w1-cli-darwin-arm64@"$VERSION" latest
-          npm dist-tag add w1-cli-darwin-x64@"$VERSION" latest
-          npm dist-tag add w1-cli-darwin-x64-baseline@"$VERSION" latest
-          npm dist-tag add w1-cli-windows-x64@"$VERSION" latest
-          npm dist-tag add w1-cli@"$VERSION" latest
-          test "$(npm view w1-cli dist-tags.latest)" = "$VERSION"
+          set -euo pipefail
+          npm dist-tag add @w1-lab/cli-darwin-arm64@"$VERSION" latest
+          npm dist-tag add @w1-lab/cli-darwin-x64@"$VERSION" latest
+          npm dist-tag add @w1-lab/cli-darwin-x64-baseline@"$VERSION" latest
+          npm dist-tag add @w1-lab/cli-windows-x64@"$VERSION" latest
+          npm dist-tag add @w1-lab/cli-windows-x64-baseline@"$VERSION" latest
+          npm dist-tag add @w1-lab/cli@"$VERSION" latest
+          # dist-tags are eventually consistent too, exactly like the packument read above. A single
+          # assert here reported 0.2.3 as a FAILED release that had in fact published everything and
+          # promoted it correctly — the second false failure of the day from the same cause. Poll.
+          for attempt in $(seq 1 30); do
+            if [ "$(npm view @w1-lab/cli dist-tags.latest 2>/dev/null)" = "$VERSION" ]; then
+              echo "latest -> $VERSION after ${attempt} attempt(s)"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "latest never advanced to $VERSION" >&2
+          exit 1

@@ -121,6 +121,8 @@ type RunFooterViewProps = {
   onThreadCatalogRequest?: FooterThreadCatalogRequest
   onThreadSelect?: FooterThreadSelect
   onThreadNew?: FooterThreadNew
+  /** Runs the self-update. Absent when the surface cannot update itself. */
+  onUpdate?: () => void | Promise<void>
   onThreadArchive?: FooterThreadArchive
   onQueuedRemove: (messageID: string) => Promise<boolean>
   onPasteAttachment?: (text: string) => Promise<RunPromptPaste | undefined>
@@ -460,6 +462,7 @@ export function RunFooterView(props: RunFooterViewProps) {
     onThreadMenu: openThreadMenu,
     onThreadSelect: resumeThread,
     onThreadNew: newThread,
+    onUpdate: props.onUpdate,
     onRows: props.onRows,
     onStatus: props.onStatus,
     onPasteAttachment: props.onPasteAttachment,

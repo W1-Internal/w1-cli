@@ -52,12 +52,19 @@ export function isNewCommand(input: string): boolean {
   return input.trim().toLowerCase() === "/new"
 }
 
-export type LocalThreadCommand = { type: "new" } | { type: "resume"; threadID?: string }
+export type LocalThreadCommand =
+  | { type: "new" }
+  | { type: "resume"; threadID?: string }
+  | { type: "update" }
 
 export function parseLocalThreadCommand(input: string): LocalThreadCommand | undefined {
   const text = input.trim()
   if (/^\/new$/i.test(text)) {
     return { type: "new" }
+  }
+
+  if (/^\/update$/i.test(text)) {
+    return { type: "update" }
   }
 
   const match = /^\/resume(?:\s+([^\s]+))?$/i.exec(text)
