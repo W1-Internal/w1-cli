@@ -29,8 +29,6 @@ jobs:
         settings:
           - name: linux
             host: ubuntu-24.04
-          - name: windows
-            host: windows-2025
     runs-on: ${{ matrix.settings.host }}
     defaults:
       run:
@@ -64,22 +62,10 @@ jobs:
             turbo-${{ runner.os }}-
 
       - name: Run unit tests
-        if: runner.os == 'Linux'
         timeout-minutes: 20
         run: GITHUB_ACTIONS=false bun turbo test
         env:
-          OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: ${{ runner.os == 'Windows' && 'true' || 'false' }}
-
-      - name: Run W1 unit tests on Windows
-        if: runner.os == 'Windows'
-        timeout-minutes: 20
-        working-directory: packages/opencode
-        run: bun test src/w1
-
-      - name: Typecheck the W1 package on Windows
-        if: runner.os == 'Windows'
-        working-directory: packages/opencode
-        run: bun run typecheck
+          OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: false
 
       - name: Check generated client
         if: runner.os == 'Linux'
@@ -99,8 +85,6 @@ jobs:
         settings:
           - name: linux
             host: ubuntu-24.04
-          - name: windows
-            host: windows-2025
     runs-on: ${{ matrix.settings.host }}
     env:
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers

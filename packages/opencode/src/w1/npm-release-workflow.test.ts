@@ -16,6 +16,20 @@ describe("W1 npm release workflow", () => {
     expect(workflow).toContain('test "$(cat "$win/bin/w1-runtime/BUILD_ID")" = "$HARNESS_REF"')
   })
 
+  test("executes both exact Windows release binaries before publishing", async () => {
+    const workflow = await readFile(workflowPath, "utf8")
+    const smoke = workflow.indexOf("windows-smoke:")
+    const publish = workflow.indexOf("\n  publish:")
+
+    expect(smoke).toBeGreaterThan(-1)
+    expect(publish).toBeGreaterThan(smoke)
+    expect(workflow).toContain("needs: [build, windows-smoke]")
+    expect(workflow).toContain('"release/npm/w1-cli-windows-x64/bin/w1.exe"')
+    expect(workflow).toContain('"release/npm/w1-cli-windows-x64-baseline/bin/w1.exe"')
+    expect(workflow).toContain("& $binary --version")
+    expect(workflow).toContain("& $binary --help")
+  })
+
   test("publishes every native package before the meta package and promotes the verified release", async () => {
     const workflow = await readFile(workflowPath, "utf8")
     const macPublish = workflow.indexOf("npm publish release/npm-packed/w1-cli-darwin-arm64.tgz")

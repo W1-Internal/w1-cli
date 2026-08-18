@@ -199,10 +199,44 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  windows-smoke:
+    name: Execute the exact Windows release binaries
+    needs: build
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - name: Download the verified package tree
+        uses: actions/download-artifact@v4
+        with:
+          name: w1-cli-npm-${{ inputs.version }}-mac-windows
+          path: release
+
+      - name: Start both Windows CPU variants
+        shell: pwsh
+        env:
+          EXPECTED_VERSION: ${{ inputs.version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $binaries = @(
+            "release/npm/w1-cli-windows-x64/bin/w1.exe",
+            "release/npm/w1-cli-windows-x64-baseline/bin/w1.exe"
+          )
+          foreach ($binary in $binaries) {
+            if (-not (Test-Path $binary)) { throw "Missing release binary: $binary" }
+            $version = (& $binary --version | Out-String).Trim()
+            if ($LASTEXITCODE -ne 0) { throw "$binary --version exited $LASTEXITCODE" }
+            if ($version -ne $env:EXPECTED_VERSION) {
+              throw "$binary reported '$version', expected '$env:EXPECTED_VERSION'"
+            }
+            & $binary --help | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "$binary --help exited $LASTEXITCODE" }
+            Write-Host "Started and verified $binary ($version)"
+          }
+
   publish:
     name: Publish immutable packages and promote latest
     if: ${{ inputs.publish }}
-    needs: build
+    needs: [build, windows-smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
