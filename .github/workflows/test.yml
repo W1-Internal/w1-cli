@@ -64,10 +64,22 @@ jobs:
             turbo-${{ runner.os }}-
 
       - name: Run unit tests
+        if: runner.os == 'Linux'
         timeout-minutes: 20
         run: GITHUB_ACTIONS=false bun turbo test
         env:
           OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: ${{ runner.os == 'Windows' && 'true' || 'false' }}
+
+      - name: Run W1 unit tests on Windows
+        if: runner.os == 'Windows'
+        timeout-minutes: 20
+        working-directory: packages/opencode
+        run: bun test src/w1
+
+      - name: Typecheck the W1 package on Windows
+        if: runner.os == 'Windows'
+        working-directory: packages/opencode
+        run: bun run typecheck
 
       - name: Check generated client
         if: runner.os == 'Linux'

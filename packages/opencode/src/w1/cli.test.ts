@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { mkdir } from "fs/promises"
+import { mkdir, mkdtemp, rm } from "fs/promises"
 import path from "path"
 import os from "os"
 import * as Pty from "@opencode-ai/core/pty/pty.bun"
@@ -249,7 +249,7 @@ test.skipIf(process.platform === "win32")("interactive W1 uses the product TUI a
 }, 15_000)
 
 test("image path attachments are persisted under the local W1 state directory", async () => {
-  const root = (await Bun.$`mktemp -d ${path.join(os.tmpdir(), "w1-cli-image.XXXXXX")}`.text()).trim()
+  const root = await mkdtemp(path.join(os.tmpdir(), "w1-cli-image."))
   const source = path.join(root, "source.png")
   await Bun.write(source, Buffer.from("89504e470d0a1a0a", "hex"))
   try {
@@ -260,7 +260,7 @@ test("image path attachments are persisted under the local W1 state directory", 
     expect(attachment.part.source.path).toContain(path.join(".w1", "attachments", "thread_test"))
     expect(await Bun.file(attachment.part.source.path).exists()).toBe(true)
   } finally {
-    await Bun.$`rm -rf ${root}`
+    await rm(root, { recursive: true, force: true })
   }
 })
 

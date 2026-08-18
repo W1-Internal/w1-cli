@@ -105,7 +105,12 @@ describe("W1 npm package contract", () => {
     expect(await readFile(path.join(output, "w1-cli-darwin-arm64", "bin", "w1-runtime", "run-stream.mjs"), "utf8")).toBe(
       "fixture runtime",
     )
-    expect((await stat(path.join(output, "w1-cli", "bin", "w1"))).mode & 0o111).not.toBe(0)
+    // Windows filesystems do not expose POSIX executable mode bits. The launcher is
+    // still executed through its package bin shim there; assert the mode only where
+    // npm actually preserves and consumes it.
+    if (process.platform !== "win32") {
+      expect((await stat(path.join(output, "w1-cli", "bin", "w1"))).mode & 0o111).not.toBe(0)
+    }
     expect(await readFile(path.join(output, "w1-cli", "LICENSE"), "utf8")).toContain("MIT License")
   })
 
