@@ -294,25 +294,57 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          # The registry serves a freshly published version's aggregated packument a little after the
-          # publish returns, so an immediate read reports 404 and fails a release that actually
-          # succeeded. Poll instead of asserting once.
-          for package in @w1-lab/cli-darwin-arm64 @w1-lab/cli-darwin-x64 @w1-lab/cli-darwin-x64-baseline @w1-lab/cli-windows-x64 @w1-lab/cli-windows-x64-baseline @w1-lab/cli; do
-            for attempt in $(seq 1 30); do
-              if [ "$(npm view "$package@$VERSION" version 2>/dev/null)" = "$VERSION" ]; then
+          # Read the registry's authoritative packument, not `npm view`. `npm view` is served through npm's
+          # cache and kept returning a stale packument for minutes after `npm publish` had already succeeded
+          # (run 34982041878: all six publishes OK, then 30x10s of "never became visible" for
+          # cli-darwin-x64-baseline@0.3.7, while an uncached GET showed it). An uncached packument fetch for
+          # the exact version is what reflects the publish.
+          # One budget is shared by all six packages. Backoff per package: 10s, 20s, 40s, then 60s.
+          packages="@w1-lab/cli-darwin-arm64 @w1-lab/cli-darwin-x64 @w1-lab/cli-darwin-x64-baseline @w1-lab/cli-windows-x64 @w1-lab/cli-windows-x64-baseline @w1-lab/cli"
+          deadline=$(( $(date +%s) + ${VERIFY_BUDGET_SECS:-900} ))
+          registry="${NPM_REGISTRY_URL:-https://registry.npmjs.org}"
+
+          packument() {
+            curl -fsS --max-time 20 -H 'Accept: application/json' -H 'Cache-Control: no-cache' \
+              "$registry/${1/\//%2F}?t=$(date +%s)"
+          }
+
+          missing=""
+          for package in $packages; do
+            delay=10
+            attempt=1
+            while :; do
+              # curl/jq failures (404 while the packument is not there yet, a network blip) mean "not yet".
+              if packument "$package" 2>/dev/null | jq -e --arg v "$VERSION" '.versions[$v]' >/dev/null 2>&1; then
                 echo "$package@$VERSION visible after ${attempt} attempt(s)"
                 break
               fi
-              if [ "$attempt" -eq 30 ]; then
-                echo "$package@$VERSION never became visible on the registry" >&2
-                exit 1
+              if [ "$(date +%s)" -ge "$deadline" ]; then
+                echo "$package@$VERSION not visible on the registry at the shared deadline" >&2
+                missing="$missing $package"
+                break
               fi
-              sleep 10
+              sleep "$delay"
+              delay=$(( delay >= 60 ? 60 : delay * 2 ))
+              attempt=$(( attempt + 1 ))
             done
           done
+
+          if [ -n "$missing" ]; then
+            # `npm publish` exited 0 for every package (the publish step runs under set -e), so this is
+            # registry propagation, not a failed publish. Do not promote, and say how to finish by hand.
+            echo "The publish itself succeeded; these packages are not yet visible, so nothing was promoted." >&2
+            echo "Once 'npm view <pkg>@$VERSION version' shows them, promote by hand:" >&2
+            for package in $packages; do
+              echo "  npm dist-tag add $package@$VERSION latest" >&2
+            done
+            exit 1
+          fi
+
           # The published meta package must only depend on names inside the owned scope.
-          npm view "@w1-lab/cli@$VERSION" optionalDependencies --json \
-            | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const o=JSON.parse(s||"{}");const bad=Object.keys(o).filter(n=>!n.startsWith("@w1-lab/"));if(bad.length){console.error("Unscoped dependency published: "+bad.join(", "));process.exit(1)}})'
+          packument @w1-lab/cli | jq -e --arg v "$VERSION" '
+            [(.versions[$v].optionalDependencies // {}) | keys[] | select(startswith("@w1-lab/") | not)] as $bad
+            | if ($bad | length) > 0 then ("Unscoped dependency published: " + ($bad | join(", ")) | halt_error(1)) else true end' >/dev/null
 
       - name: Promote the verified release to latest
         env:
@@ -325,15 +357,22 @@ jobs:
           npm dist-tag add @w1-lab/cli-windows-x64@"$VERSION" latest
           npm dist-tag add @w1-lab/cli-windows-x64-baseline@"$VERSION" latest
           npm dist-tag add @w1-lab/cli@"$VERSION" latest
-          # dist-tags are eventually consistent too, exactly like the packument read above. A single
-          # assert here reported 0.2.3 as a FAILED release that had in fact published everything and
-          # promoted it correctly — the second false failure of the day from the same cause. Poll.
-          for attempt in $(seq 1 30); do
-            if [ "$(npm view @w1-lab/cli dist-tags.latest 2>/dev/null)" = "$VERSION" ]; then
-              echo "latest -> $VERSION after ${attempt} attempt(s)"
+          # dist-tags are eventually consistent too, and `npm view` reads them through npm's cache
+          # (the same cause as the verify step above). Read the uncached packument, same backoff, own
+          # 5 minute budget: the six `dist-tag add` calls above already exited 0.
+          deadline=$(( $(date +%s) + 300 ))
+          delay=10
+          while :; do
+            latest="$(curl -fsS --max-time 20 -H 'Accept: application/json' -H 'Cache-Control: no-cache' \
+              "https://registry.npmjs.org/@w1-lab%2Fcli?t=$(date +%s)" 2>/dev/null | jq -r '."dist-tags".latest // empty' 2>/dev/null || true)"
+            if [ "$latest" = "$VERSION" ]; then
+              echo "latest -> $VERSION"
               exit 0
             fi
-            sleep 10
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "latest not yet showing $VERSION (dist-tag add exited 0; likely propagation)" >&2
+              exit 1
+            fi
+            sleep "$delay"
+            delay=$(( delay >= 60 ? 60 : delay * 2 ))
           done
-          echo "latest never advanced to $VERSION" >&2
-          exit 1
